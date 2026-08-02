@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { DIMENSIONS, DRIVE_KEYS, SATURATE_CEIL, SATURATE_FLOOR } from './dimensions.js';
+import { DIMENSIONS, DRIVE_KEYS, INITIAL_DRIVE_VALUE, SATURATE_CEIL, SATURATE_FLOOR } from './dimensions.js';
 import { newThoughtPool, tickThoughtPool, addFlashThought, obsessionBonus } from './thought-pool.js';
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
@@ -42,6 +42,10 @@ function ensureStateShape(state) {
     : [];
   state.interactionUsage ??= {};
   state.handoffNotes = Array.isArray(state.handoffNotes) ? state.handoffNotes : [];
+  state.drives = Object.fromEntries(DRIVE_KEYS.map((key) => [
+    key,
+    Number.isFinite(Number(state.drives?.[key])) ? clamp(Number(state.drives[key])) : INITIAL_DRIVE_VALUE,
+  ]));
   state.schemaVersion = Math.max(7, Number(state.schemaVersion) || 0);
   return state;
 }
@@ -195,7 +199,7 @@ export function newState(now = new Date()) {
     lastHeartbeatAt: null,
     lastSettledAt: at,
     sleepStartedAt: null,
-    drives: Object.fromEntries(DRIVE_KEYS.map((key) => [key, 0.15])),
+    drives: Object.fromEntries(DRIVE_KEYS.map((key) => [key, INITIAL_DRIVE_VALUE])),
     thoughtPool: newThoughtPool(),
     fatigue: 0,
     recentDreams: [],

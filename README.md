@@ -44,6 +44,10 @@
 - 可选 Bark 通知与跨类型去重。
 - 原子状态持久化与结构化转换日志。
 
+## 闻舟 TG-first 配置
+
+本 fork 提供可替换的驱动力配置文件与一套克制的 TG-first 初始值。部署和接入边界见 [docs/WENZHOU_TG_MVP.md](docs/WENZHOU_TG_MVP.md)。
+
 ## 快速开始
 
 要求：Node.js 20 或更高版本。

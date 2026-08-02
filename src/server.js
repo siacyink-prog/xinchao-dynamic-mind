@@ -13,8 +13,10 @@ import { TransitionJournal } from './transition-journal.js';
 import { handleMcpMessage } from './mcp-protocol.js';
 import { OAuthProvider } from './oauth-provider.js';
 import { recordHandoffNote } from './handoff-notes.js';
+import { loadDriveProfile } from './dimensions.js';
 
 const config = validateConfig(loadConfig());
+loadDriveProfile(config.drives.profilePath);
 if (!config.serviceToken) throw new Error('SERVICE_TOKEN is required');
 // 拒绝占位值和弱 token —— 忘了换示例值就启动，等于把钥匙印在说明书上。
 if (/^replace-with/i.test(config.serviceToken)) {

@@ -70,6 +70,9 @@ export function loadConfig() {
       maxEffectsPerDay: number('INTERACTION_MAX_EFFECTS_PER_DAY', 24, 1, 96),
       timeZone: process.env.INTERACTION_TIME_ZONE ?? process.env.SETTLE_TIME_ZONE ?? 'Asia/Shanghai',
     },
+    drives: {
+      profilePath: process.env.DRIVE_PROFILE_PATH ?? '',
+    },
     heartbeat: {
       filePath: process.env.OMBRE_HEARTBEAT_FILE ?? '/memory-data/heartbeat.json',
       // Dream residue may be shared after a shorter quiet period. Autonomous
