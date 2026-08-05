@@ -75,6 +75,7 @@ export function loadConfig() {
     },
     heartbeat: {
       filePath: process.env.OMBRE_HEARTBEAT_FILE ?? '/memory-data/heartbeat.json',
+      presenceReliefCooldownMinutes: number('HEARTBEAT_PRESENCE_RELIEF_COOLDOWN_MINUTES', 10, 1, 1440),
       // Dream residue may be shared after a shorter quiet period. Autonomous
       // contact stays on the stricter, long-absence threshold below.
       dreamMinIdleHours: number('BARK_DREAM_MIN_CONTACT_IDLE_HOURS', 3, 1, 24),

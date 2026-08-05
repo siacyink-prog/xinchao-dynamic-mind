@@ -93,6 +93,7 @@ test('POST /v1/handoff-note stores a bounded idempotent note for HTTP clients', 
   const heartbeatResult = await heartbeat.json();
   assert.equal(heartbeatResult.sessionId, 'http-window');
   assert.equal(heartbeatResult.duplicate, false);
+  assert.equal(heartbeatResult.presenceRelief.applied, true);
 
   const stateAfterHeartbeat = await fetch(`${baseUrl}/v1/state`, {
     headers: { authorization: `Bearer ${token}` },

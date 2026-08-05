@@ -41,12 +41,13 @@ function ensureStateShape(state) {
     ? state.recentConversationEvents.slice(-MAX_RECENT_CONVERSATION_EVENTS)
     : [];
   state.interactionUsage ??= {};
+  state.lastPresenceReliefAt ??= null;
   state.handoffNotes = Array.isArray(state.handoffNotes) ? state.handoffNotes : [];
   state.drives = Object.fromEntries(DRIVE_KEYS.map((key) => [
     key,
     Number.isFinite(Number(state.drives?.[key])) ? clamp(Number(state.drives[key])) : INITIAL_DRIVE_VALUE,
   ]));
-  state.schemaVersion = Math.max(7, Number(state.schemaVersion) || 0);
+  state.schemaVersion = Math.max(8, Number(state.schemaVersion) || 0);
   return state;
 }
 
@@ -192,11 +193,12 @@ function applySessionOverlay(state, event, now) {
 export function newState(now = new Date()) {
   const at = iso(now);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     revision: 0,
     consciousness: 'awake',
     lastConversationAt: at,
     lastHeartbeatAt: null,
+    lastPresenceReliefAt: null,
     lastSettledAt: at,
     sleepStartedAt: null,
     drives: Object.fromEntries(DRIVE_KEYS.map((key) => [key, INITIAL_DRIVE_VALUE])),
@@ -494,6 +496,37 @@ export function settleAndApplyConversationEvent(input, event = {}, now = new Dat
 }
 
 // ── pickIntent (weighted random from tied pool) ───────────────────
+
+function applyPresenceRelief(state, now, options = {}) {
+  const cooldownMinutes = clamp(Number(options.cooldownMinutes ?? 10), 1, 1440);
+  const lastAppliedMs = Date.parse(state.lastPresenceReliefAt ?? '');
+  const elapsedMinutes = (now.getTime() - lastAppliedMs) / 60_000;
+  if (Number.isFinite(lastAppliedMs) && elapsedMinutes < cooldownMinutes) {
+    return { applied: false, reasonCode: 'cooldown', affectedDrives: [], nextEligibleAt: iso(new Date(lastAppliedMs + cooldownMinutes * 60_000)) };
+  }
+
+  // A content-free heartbeat only proves ongoing presence. Keep this gentler
+  // than explicit semantic outcomes such as companionship or affection.
+  const relief = { possess: 0.06, monitor: 0.08, boredom: 0.05 };
+  const affectedDrives = [];
+  for (const [key, amount] of Object.entries(relief)) {
+    if (!DRIVE_KEYS.includes(key)) continue;
+    const before = Number(state.drives[key] ?? 0);
+    const after = Number(clamp(before * (1 - amount)).toFixed(4));
+    state.drives[key] = after;
+    if (after !== before) affectedDrives.push(key);
+  }
+  state.lastPresenceReliefAt = iso(now);
+  return { applied: true, reasonCode: 'applied', affectedDrives, nextEligibleAt: iso(new Date(now.getTime() + cooldownMinutes * 60_000)) };
+}
+
+export function settleAndApplyHeartbeat(input, event = {}, now = new Date(), options = {}) {
+  const result = settleAndApplyConversationEvent(input, event, now, options);
+  const presenceRelief = result.duplicate
+    ? { applied: false, reasonCode: 'duplicate_event', affectedDrives: [], nextEligibleAt: result.state.lastPresenceReliefAt }
+    : applyPresenceRelief(result.state, now, options.heartbeat ?? {});
+  return { ...result, presenceRelief };
+}
 
 export function pickIntent(state, random = Math.random) {
   const entries = Object.entries(state.drives)

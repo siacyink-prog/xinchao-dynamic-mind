@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadConfig, validateConfig } from './config.js';
-import { applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, pickIntent, proactiveBarkAllowed, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleState, topDrives } from './engine.js';
+import { applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, pickIntent, proactiveBarkAllowed, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState, topDrives } from './engine.js';
 import { selectUniqueBark } from './bark-dedupe.js';
 import { StateStore } from './state-store.js';
 import { ModelClient } from './model-client.js';
@@ -442,16 +442,20 @@ async function recordConversationEvent(event, source = 'api', now = new Date()) 
     details: auditDetails,
     at: now,
   }, (current) => {
-    applied = settleAndApplyConversationEvent(current, event, now, {
+    const applyEvent = source === "heartbeat" ? settleAndApplyHeartbeat : settleAndApplyConversationEvent;
+    applied = applyEvent(current, event, now, {
       sleepAfterMinutes: config.sleepAfterMinutes,
       settle: config.settle,
       interaction: config.interaction,
+      heartbeat: { cooldownMinutes: config.heartbeat.presenceReliefCooldownMinutes },
     });
     Object.assign(auditDetails, {
       changed: applied.changed,
       duplicate: applied.duplicate,
       interactionApplied: applied.interaction?.applied,
       reasonCode: applied.interaction?.reasonCode,
+      presenceReliefApplied: applied.presenceRelief?.applied,
+      presenceReliefReasonCode: applied.presenceRelief?.reasonCode,
       settledHours: Number(applied.settled.elapsedHours.toFixed(4)),
     });
     return applied.state;
@@ -464,6 +468,7 @@ async function recordConversationEvent(event, source = 'api', now = new Date()) 
     sessionCreated: applied.sessionCreated,
     duplicate: applied.duplicate,
     interaction: applied.interaction,
+    presenceRelief: applied.presenceRelief ?? null,
     settledHours: Number(applied.settled.elapsedHours.toFixed(4)),
   };
 }

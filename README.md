@@ -10,6 +10,7 @@
 
 - **HTTP 便签闭环**：补齐 `POST /v1/handoff-note`，HTTP 前端与 MCP 客户端现在使用同一套有界、幂等的短期交接。
 - **在场时间修复**：heartbeat 和真实 `xinchao_event` 都会刷新 `lastHeartbeatAt`，避免在线时被自主推送误判为长期离线。
+- **在场安抚**：普通 heartbeat 每十分钟最多轻缓解一次靠近、惦记与无聊相关驱力；明确互动仍由 `xinchao_event` 单独结算。
 - **隐私版窗口 hook**：提供只发送会话 ID 与随机事件 ID 的 Claude Code 脚本，不上传提示词正文。
 - **稳定 MCP 窗口**：初始化时由服务端签发 `Mcp-Session-Id`，不再依赖模型临时编写窗口 ID。
 - **近期连续性**：Context Envelope 只携带动态短态、近期交接和可选的长期记忆召回，不替代客户端自己的核心指令或人物基岩。

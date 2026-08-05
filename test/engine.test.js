@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeSessionOverlay, applyConversationEvent, applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, barkDuplicateCheck, barkMessageSimilarity, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, proactiveBarkAllowed, recentBarkHistory, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleState } from '../src/engine.js';
+import { activeSessionOverlay, applyConversationEvent, applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, barkDuplicateCheck, barkMessageSimilarity, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, proactiveBarkAllowed, recentBarkHistory, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState } from '../src/engine.js';
 import { DIMENSIONS } from '../src/dimensions.js';
 
 test('idle time enters sleep and repeated settlement is idempotent at same instant', () => {
@@ -70,7 +70,7 @@ test('Bark history spans message kinds and keeps only the latest eight sends', (
     if (index === 2) state = recordDaytimeEmergence(state, `message-${index}`, at);
     else state = recordBark(state, at, { kind: index % 2 ? 'dream' : 'autonomous_thought', message: `message-${index}` });
   }
-  assert.equal(state.schemaVersion, 7);
+  assert.equal(state.schemaVersion, 8);
   assert.deepEqual(recentBarkHistory(state).map((item) => item.message), ['message-1', 'message-2', 'message-3', 'message-4', 'message-5', 'message-6', 'message-7', 'message-8']);
   assert.deepEqual(new Set(recentBarkHistory(state).map((item) => item.kind)), new Set(['dream', 'daytime_emergence', 'autonomous_thought']));
 });
@@ -156,6 +156,29 @@ test('conversation outcomes settle elapsed growth before applying bounded drive 
   assert.equal(result.state.interactionUsage['2026-07-28'], 1);
 });
 
+test("heartbeat lightly relieves presence drives at most once per cooldown", () => {
+  const start = new Date("2026-07-28T01:00:00Z");
+  const initial = newState(start);
+  initial.drives.possess = 0.5;
+  initial.drives.monitor = 0.5;
+  initial.drives.boredom = 0.5;
+  initial.drives.share = 0.5;
+  const first = settleAndApplyHeartbeat(initial, { sessionId: "codex-window", eventId: "heartbeat-1" }, start, { heartbeat: { cooldownMinutes: 10 } });
+  assert.equal(first.presenceRelief.applied, true);
+  assert.deepEqual(first.presenceRelief.affectedDrives, ["possess", "monitor", "boredom"]);
+  assert.equal(first.state.drives.possess, 0.47);
+  assert.equal(first.state.drives.monitor, 0.46);
+  assert.equal(first.state.drives.boredom, 0.475);
+  assert.equal(first.state.drives.share, 0.5);
+  const withinCooldown = settleAndApplyHeartbeat(first.state, { sessionId: "codex-window", eventId: "heartbeat-2" }, new Date("2026-07-28T01:05:00Z"), { heartbeat: { cooldownMinutes: 10 } });
+  assert.equal(withinCooldown.presenceRelief.applied, false);
+  assert.equal(withinCooldown.presenceRelief.reasonCode, "cooldown");
+  assert.equal(withinCooldown.state.lastPresenceReliefAt, first.state.lastPresenceReliefAt);
+  const afterCooldown = settleAndApplyHeartbeat(withinCooldown.state, { sessionId: "codex-window", eventId: "heartbeat-3" }, new Date("2026-07-28T01:10:00Z"), { heartbeat: { cooldownMinutes: 10 } });
+  assert.equal(afterCooldown.presenceRelief.applied, true);
+  assert.equal(afterCooldown.state.lastPresenceReliefAt, "2026-07-28T01:10:00.000Z");
+});
+
 test('conversation event ids make interaction settlement idempotent', () => {
   const now = new Date('2026-07-28T01:00:00Z');
   const event = {
@@ -223,7 +246,7 @@ test('old state schemas migrate even when settlement time has not advanced', () 
   delete old.contextDeliveries;
   delete old.handoffNotes;
   const settled = settleState(old, now, 90);
-  assert.equal(settled.state.schemaVersion, 7);
+  assert.equal(settled.state.schemaVersion, 8);
   assert.deepEqual(settled.state.handoffNotes, []);
   assert.equal(settled.changed, true);
   assert.equal(settled.state.revision, 1);
