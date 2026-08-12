@@ -807,6 +807,7 @@ const server = createServer(async (request, response) => {
         system: 'xinchao-dynamic-mind',
         mode: config.shadowMode ? 'shadow' : 'active',
         version: SYSTEM_VERSION,
+        dashboardEnabled: config.dashboard.enabled,
       });
     }
     if (await oauth.handle(request, response, url)) return;
