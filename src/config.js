@@ -1,6 +1,6 @@
 function bool(name, fallback = false) {
   const raw = process.env[name];
-  return raw == null ? fallback : ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+  return raw == null ? fallback : ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
 
 function number(name, fallback, min, max) {
