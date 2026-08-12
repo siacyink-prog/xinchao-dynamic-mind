@@ -1,11 +1,12 @@
 import { createServer } from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadConfig, validateConfig } from './config.js';
-import { applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, pickIntent, proactiveBarkAllowed, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState, topDrives } from './engine.js';
+import { INTERACTION_TYPES, applyDriveFeedback, applyMemoryResonance, applyOmbreHeartbeat, applyOutputReflux, applyLongingNudge, barkAllowed, breathDreamContext, contactIdleAllowed, computeLonging, daytimeEmergenceAllowed, dreamAllowed, newState, pickIntent, proactiveBarkAllowed, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState, topDrives } from './engine.js';
+import { buildInteractionBridgeMessage } from './interaction-messages.js';
 import { selectUniqueBark } from './bark-dedupe.js';
 import { StateStore } from './state-store.js';
 import { ModelClient } from './model-client.js';
-import { OmbreClient } from './ombre-client.js';
+import { OmbreClient, parseSurfacedDomains } from './ombre-client.js';
 import { BarkClient } from './bark-client.js';
 import { readOmbreHeartbeat } from './heartbeat-store.js';
 import { buildContextEnvelope, contextDeliveryState, recordContextDelivery } from './context-envelope.js';
@@ -14,6 +15,10 @@ import { handleMcpMessage } from './mcp-protocol.js';
 import { OAuthProvider } from './oauth-provider.js';
 import { recordHandoffNote } from './handoff-notes.js';
 import { loadDriveProfile } from './dimensions.js';
+import { DashboardAuth } from './dashboard-auth.js';
+import { buildConnectionManifest, buildDashboardSnapshot } from './dashboard-projection.js';
+import { BRIDGE_SERVER_PROTOCOL, BRIDGE_STREAM_PROTOCOL, BridgeQueue } from './bridge-queue.js';
+import { CabinStore } from './cabin-store.js';
 
 const config = validateConfig(loadConfig());
 loadDriveProfile(config.drives.profilePath);
@@ -32,8 +37,17 @@ const ombre = new OmbreClient(config.ombre);
 const bark = new BarkClient(config.bark);
 const journal = new TransitionJournal(config.journalPath);
 const oauth = new OAuthProvider(config.oauth, (event, fields = {}) => log(event, fields));
+const dashboardAuth = new DashboardAuth({
+  ...config.dashboard,
+  ttlSeconds: config.dashboard.sessionTtlSeconds,
+  secureCookies: config.dashboard.publicBaseUrl.startsWith('https://'),
+});
+const bridgeQueue = new BridgeQueue(config.bridge.statePath, config.bridge);
+const cabin = new CabinStore(config.cabin.statePath, config.cabin);
+const bridgeStreams = new Set();
 await oauth.init();
 let cyclePromise = null;
+const SYSTEM_VERSION = '2.5.12';
 
 function log(event, fields = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...fields }));
@@ -107,15 +121,31 @@ async function runCycle() {
     let dreamCreated = false;
     let barkSent = false;
     let daytimeSent = false;
+
+    // 挂念：她过了常来的点还没来 → 轻推 monitor(惦记) 进数值（不只在上下文）。
+    // applyLongingNudge 硬顶在 3A 天花板内、不自激；她的静默时段 computeLonging 返回 0，不念。
+    if (config.longing.enabled) {
+      const longing = computeLonging(state, now, { timeZone: config.settle.timeZone, ...config.longing });
+      const preview = longing > 0 ? applyLongingNudge(state, longing, now, config.longing) : { changed: false };
+      if (preview.changed) {
+        state = await updateState({
+          type: 'longing_nudge',
+          source: 'longing',
+          details: { longing: Number(longing.toFixed(3)), applied: preview.applied },
+          at: now,
+        }, (latest) => applyLongingNudge(latest, longing, now, config.longing).state);
+        log('longing_nudge', { longing: Number(longing.toFixed(3)), applied: preview.applied, revision: state.revision });
+      }
+    }
     // Dream residue follows a short quiet period; autonomous contact remains
     // reserved for a genuine long absence.
     const dreamContactIsIdle = contactIdleAllowed(state, now, config.heartbeat.dreamMinIdleHours);
     const proactiveContactIsIdle = contactIdleAllowed(state, now, config.heartbeat.proactiveMinIdleHours);
 
-    if (dreamAllowed(state, now, config.dreamMinIntervalHours, config.dreamMaxPerDay)) {
+    if (config.dreamEnabled && dreamAllowed(state, now, config.dreamMinIntervalHours, config.dreamMaxPerDay)) {
       let material = '';
       if (!config.shadowMode && config.ombre.readEnabled) {
-        try { material = await ombre.recentMaterial(); }
+        try { material = await ombre.recentMaterial(topDrives(state)); }
         catch (error) { log('ombre_read_failed', { message: error.message }); }
       }
 
@@ -180,6 +210,19 @@ async function runCycle() {
               }, (latest) => recordBark(latest, now, { kind: 'dream', message: selected.message }));
               barkSent = true;
               log('bark_sent', { kind: 'dream', revision: state.revision });
+              // 回流补全：他把梦余韵分享给她，也是一次向她的表达 → 回流进思维池（同自主念头）。
+              if (config.reflux.enabled) {
+                const expressed = topDrives(state)[0];
+                if (expressed) {
+                  state = await updateState({
+                    type: 'output_reflux',
+                    source: 'reflux',
+                    details: { kind: 'dream', drive: expressed.key },
+                    at: now,
+                  }, (latest) => applyOutputReflux(latest, expressed.key, selected.message, now, config.reflux.amount).state);
+                  log('output_reflux', { kind: 'dream', drive: expressed.key, revision: state.revision });
+                }
+              }
             }
           }
         } catch (error) { log('bark_failed', { kind: 'dream', message: error.message }); }
@@ -189,6 +232,25 @@ async function runCycle() {
     if (!config.shadowMode && config.bark.enabled && proactiveContactIsIdle && !dreamCreated && proactiveBarkAllowed(state, now, config.bark.autonomousMinIntervalHours, config.bark.maxPerDay, config.bark.minDrive)) {
       let selected;
       let modelFailed = false;
+      // 只取一次：selectUniqueBark 去重失败时会重试生成，材料跟着重取的话
+      // 一条通知能打出好几次 OB 往返，而浮现的东西本来就该是同一件事。
+      let thoughtMaterial = '';
+      if (config.ombre.readEnabled) {
+        try { thoughtMaterial = await ombre.thoughtMaterial(topDrives(state)); }
+        catch (error) { log('ombre_read_failed', { message: error.message }); }
+      }
+      if (config.resonance.enabled && thoughtMaterial) {
+        const domains = parseSurfacedDomains(thoughtMaterial);
+        if (domains.length) {
+          state = await updateState({
+            type: 'memory_resonance',
+            source: 'resonance',
+            details: { kind: 'autonomous_thought', domains: domains.slice(0, 8).join(',') },
+            at: now,
+          }, (latest) => applyMemoryResonance(latest, domains, now, config.resonance).state);
+          log('memory_resonance', { kind: 'autonomous_thought', domains: domains.length, revision: state.revision });
+        }
+      }
       try {
         selected = await selectUniqueBark({
           state,
@@ -196,7 +258,7 @@ async function runCycle() {
           generate: async ({ recentMessages, rejectedMessage }) => {
             if (modelFailed) return new ModelClient({ ...config.model, enabled: false }).fallbackThought(topDrives(state));
             try {
-              return await model.generateThought({ state, topDrives: topDrives(state), recentMessages, rejectedMessage });
+              return await model.generateThought({ state, topDrives: topDrives(state), material: thoughtMaterial, recentMessages, rejectedMessage });
             } catch (error) {
               modelFailed = true;
               log('thought_model_failed', { message: error.message });
@@ -223,6 +285,18 @@ async function runCycle() {
             }, (latest) => recordBark(latest, now, { kind: 'autonomous_thought', message: selected.message }));
             barkSent = true;
             log('bark_sent', { kind: 'autonomous_thought', source: selected.candidate?.source, revision: state.revision });
+            if (config.reflux.enabled) {
+              const expressed = topDrives(state)[0];
+              if (expressed) {
+                state = await updateState({
+                  type: 'output_reflux',
+                  source: 'reflux',
+                  details: { kind: 'autonomous_thought', drive: expressed.key },
+                  at: now,
+                }, (latest) => applyOutputReflux(latest, expressed.key, selected.message, now, config.reflux.amount).state);
+                log('output_reflux', { kind: 'autonomous_thought', drive: expressed.key, revision: state.revision });
+              }
+            }
           }
         } catch (error) { log('bark_failed', { kind: 'autonomous_thought', message: error.message }); }
       }
@@ -238,12 +312,24 @@ async function runCycle() {
     } else if (!config.shadowMode && config.daytime.enabled && config.ombre.readEnabled && config.bark.enabled && daytimeEmergenceAllowed(state, now, config.daytime)) {
       let selected = { message: '', candidate: { source: 'none' }, reason: 'empty', attempts: 1 };
       try {
-        const material = await ombre.daytimeMaterial();
+        const material = await ombre.daytimeMaterial(topDrives(state));
+        if (config.resonance.enabled && material) {
+          const domains = parseSurfacedDomains(material);
+          if (domains.length) {
+            state = await updateState({
+              type: 'memory_resonance',
+              source: 'resonance',
+              details: { kind: 'daytime_emergence', domains: domains.slice(0, 8).join(',') },
+              at: now,
+            }, (latest) => applyMemoryResonance(latest, domains, now, config.resonance).state);
+            log('memory_resonance', { kind: 'daytime_emergence', domains: domains.length, revision: state.revision });
+          }
+        }
         if (material.trim()) {
           selected = await selectUniqueBark({
             state,
             onRejected: ({ attempt, similarity }) => log('bark_duplicate_rejected', { kind: 'daytime_emergence', attempt, similarity }),
-            generate: ({ recentMessages, rejectedMessage }) => model.generateDaytimeEmergence({ material, recentMessages, rejectedMessage }),
+            generate: ({ recentMessages, rejectedMessage }) => model.generateDaytimeEmergence({ material, topDrives: topDrives(state), recentMessages, rejectedMessage }),
           });
         }
       } catch (error) {
@@ -264,6 +350,18 @@ async function runCycle() {
             }, (latest) => recordDaytimeEmergence(latest, selected.message, now, config.daytime.timeZone));
             daytimeSent = true;
             log('bark_sent', { kind: 'daytime_emergence', source: selected.candidate?.source, revision: state.revision });
+            if (config.reflux.enabled) {
+              const expressed = topDrives(state)[0];
+              if (expressed) {
+                state = await updateState({
+                  type: 'output_reflux',
+                  source: 'reflux',
+                  details: { kind: 'daytime_emergence', drive: expressed.key },
+                  at: now,
+                }, (latest) => applyOutputReflux(latest, expressed.key, selected.message, now, config.reflux.amount).state);
+                log('output_reflux', { kind: 'daytime_emergence', drive: expressed.key, revision: state.revision });
+              }
+            }
           }
         } catch (error) {
           log('bark_failed', { kind: 'daytime_emergence', message: error.message });
@@ -301,6 +399,29 @@ function authorized(request) {
   return safeEqual(supplied, config.serviceToken);
 }
 
+function bridgeAuthorized(request) {
+  const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '') ?? '';
+  return Boolean(config.bridge.enabled) && safeEqual(supplied, config.bridge.machineToken);
+}
+
+function sendBridgeEvent(response, event, value) {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(value)}\n\n`);
+}
+
+async function publishReadyBridgeDeliveries() {
+  if (!config.bridge.enabled || !bridgeStreams.size) return;
+  const ready = await bridgeQueue.ready();
+  for (const delivery of ready) {
+    for (const response of bridgeStreams) {
+      sendBridgeEvent(response, 'delivery', {
+        protocol: BRIDGE_STREAM_PROTOCOL,
+        deliveryId: delivery.id,
+      });
+    }
+  }
+}
+
 function mcpPath(url) {
   return url.pathname === '/mcp' || url.pathname.startsWith('/mcp/');
 }
@@ -334,14 +455,105 @@ async function body(request) {
   let raw = '';
   for await (const chunk of request) {
     raw += chunk;
-    if (raw.length > 64 * 1024) throw new Error('request body too large');
+    if (raw.length > 1024 * 1024) throw new Error('request body too large');
   }
   return raw ? JSON.parse(raw) : {};
 }
 
-function send(response, status, value) {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+/**
+ * 只为 Dashboard 浏览器直连开放受控 CORS。
+ * 默认不放行；部署者必须把完整前端来源写入 DASHBOARD_ALLOWED_ORIGINS。
+ * 直连只使用 Authorization 会话头，不开放跨源 Cookie。
+ */
+function applyDashboardCors(request, response, url) {
+  if (!url.pathname.startsWith('/dashboard/')) return false;
+  const origin = String(request.headers.origin ?? '').replace(/\/$/, '');
+  if (!origin) return false;
+  response.setHeader('Vary', 'Origin');
+  if (!config.dashboard.allowedOrigins.includes(origin)) return false;
+  response.setHeader('Access-Control-Allow-Origin', origin);
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  response.setHeader('Access-Control-Max-Age', '600');
+  return true;
+}
+
+function send(response, status, value, extraHeaders = {}) {
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    ...extraHeaders,
+  });
   response.end(JSON.stringify(value));
+}
+
+function dashboardTimelineOptions(url) {
+  const types = url.searchParams.getAll('type')
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return {
+    limit: url.searchParams.get('limit') ?? 50,
+    since: url.searchParams.get('since') ?? '',
+    types,
+  };
+}
+
+async function dashboardPayload(pathname, url) {
+  if (pathname.endsWith('/snapshot')) {
+    return buildDashboardSnapshot(await store.read(), config, new Date());
+  }
+  if (pathname.endsWith('/timeline')) {
+    return {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      items: await journal.list(dashboardTimelineOptions(url)),
+    };
+  }
+  if (pathname.endsWith('/memory-map')) {
+    if (!config.ombre.readEnabled) {
+      return {
+        schemaVersion: 2,
+        generatedAt: new Date().toISOString(),
+        available: false,
+        reason: 'not_configured',
+        total: 0,
+        stats: {},
+        stars: [],
+        edges: [],
+        capabilities: {
+          explicitRelations: false,
+          driveSnapshots: false,
+          driveAffinity: false,
+          timestamps: false,
+        },
+      };
+    }
+    try {
+      return await ombre.memoryMap();
+    } catch (error) {
+      log('dashboard_memory_map_failed', { message: error.message });
+      return {
+        schemaVersion: 2,
+        generatedAt: new Date().toISOString(),
+        available: false,
+        reason: 'ombre_unavailable',
+        total: 0,
+        stats: {},
+        stars: [],
+        edges: [],
+        capabilities: {
+          explicitRelations: false,
+          driveSnapshots: false,
+          driveAffinity: false,
+          timestamps: false,
+        },
+      };
+    }
+  }
+  if (pathname.endsWith('/connect')) return buildConnectionManifest(config);
+  if (pathname.endsWith('/cabin')) return cabin.snapshot();
+  return null;
 }
 
 function sendMcp(response, status, value, extraHeaders = {}) {
@@ -391,6 +603,7 @@ async function createContextEnvelope({
     now,
     alreadyDelivered: delivery.alreadyDelivered,
     force,
+    timeZone: config.settle.timeZone,
   });
   if (envelope.delivered) {
     state = await updateState({
@@ -448,6 +661,9 @@ async function recordConversationEvent(event, source = 'api', now = new Date()) 
       settle: config.settle,
       interaction: config.interaction,
       heartbeat: { cooldownMinutes: config.heartbeat.presenceReliefCooldownMinutes },
+      // 作息预期只从她真实的到来学习，心跳不算。
+      recordArrival: config.anticipation.enabled && source !== 'heartbeat',
+      arrivalGapMinutes: config.anticipation.arrivalGapMinutes,
     });
     Object.assign(auditDetails, {
       changed: applied.changed,
@@ -496,6 +712,51 @@ async function saveHandoffNote(note, source = 'mcp', now = new Date()) {
   };
 }
 
+function dashboardInteractionFromHttp(payload = {}) {
+  const allowedKeys = new Set(['event_id', 'eventId', 'interaction_type', 'interactionType']);
+  const unexpected = Object.keys(payload).filter((key) => !allowedKeys.has(key));
+  if (unexpected.length) throw new Error('interaction payload only accepts event_id and interaction_type');
+  const eventId = String(payload.event_id ?? payload.eventId ?? '').trim();
+  const interactionType = String(payload.interaction_type ?? payload.interactionType ?? '').trim().toLowerCase();
+  if (eventId.length < 8 || eventId.length > 120) throw new Error('event_id must contain 8 to 120 characters');
+  if (!INTERACTION_TYPES.includes(interactionType)) throw new Error('interaction_type is not supported');
+  return {
+    sessionId: 'dashboard-interaction',
+    eventId,
+    interactionType,
+  };
+}
+
+// 只写动作，不写主语和落点 —— 主语用配置里的称呼，落点由实际影响的维度算出来。
+async function enqueueDashboardInteraction(event, result) {
+  if (!config.bridge.enabled || result.duplicate) return null;
+  const message = buildInteractionBridgeMessage({
+    interactionType: event.interactionType,
+    result,
+    recipient: config.identity.notificationRecipient,
+  });
+  const queued = await bridgeQueue.enqueue({
+    eventId: event.eventId,
+    reason: 'user_interaction',
+    message,
+  });
+  await publishReadyBridgeDeliveries();
+  return { queued: true, deliveryId: queued.delivery.id, duplicate: queued.duplicate };
+}
+
+function bridgeDeliveryFromDashboard(payload = {}, now = new Date()) {
+  const allowed = new Set(['event_id', 'eventId', 'message', 'deliver_after', 'deliverAfter']);
+  const unexpected = Object.keys(payload).filter((key) => !allowed.has(key));
+  if (unexpected.length) throw new Error('bridge delivery only accepts event_id, message and deliver_after');
+  const eventId = String(payload.event_id ?? payload.eventId ?? '').trim();
+  const message = String(payload.message ?? '').replace(/\s+/g, ' ').trim();
+  const deliverAfter = payload.deliver_after ?? payload.deliverAfter ?? null;
+  if (eventId.length < 8 || eventId.length > 120) throw new Error('event_id must contain 8 to 120 characters');
+  if (!message || message.length > 1200) throw new Error('message must contain 1 to 1200 characters');
+  const scheduled = deliverAfter && Date.parse(deliverAfter) > now.getTime();
+  return { eventId, message, deliverAfter, reason: scheduled ? 'scheduled_interaction' : 'user_note' };
+}
+
 function handoffNoteFromHttp(payload = {}) {
   return {
     sessionId: payload.sessionId ?? payload.session_id,
@@ -505,18 +766,239 @@ function handoffNoteFromHttp(payload = {}) {
   };
 }
 
+async function enqueueCabinNotice({ eventId, message }) {
+  if (!config.bridge.enabled) return null;
+  const queued = await bridgeQueue.enqueue({ eventId, reason: 'user_note', message });
+  await publishReadyBridgeDeliveries();
+  return { queued: true, duplicate: queued.duplicate, deliveryId: queued.delivery.id };
+}
+
+function cabinNoteInput(payload = {}, defaultFrom = 'user') {
+  return {
+    eventId: payload.event_id ?? payload.eventId,
+    from: payload.from ?? defaultFrom,
+    content: payload.content,
+    timestamp: payload.timestamp,
+    locked: payload.locked,
+  };
+}
+
+function cabinLedgerInput(payload = {}) {
+  return {
+    eventId: payload.event_id ?? payload.eventId,
+    type: payload.type,
+    item: payload.item,
+    amount: payload.amount,
+    date: payload.date,
+  };
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, 'http://localhost');
+    const corsAllowed = applyDashboardCors(request, response, url);
+    if (request.method === 'OPTIONS' && url.pathname.startsWith('/dashboard/')) {
+      response.writeHead(corsAllowed ? 204 : 403).end();
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/health') {
       return send(response, 200, {
         ok: true,
         system: 'xinchao-dynamic-mind',
         mode: config.shadowMode ? 'shadow' : 'active',
-        version: '2.3.2',
+        version: SYSTEM_VERSION,
       });
     }
     if (await oauth.handle(request, response, url)) return;
+    if (url.pathname.startsWith('/bridge/v1')) {
+      if (!config.bridge.enabled) return send(response, 404, { error: 'not found' });
+      if (!bridgeAuthorized(request)) return send(response, 401, { error: 'unauthorized' });
+      if (request.method === 'GET' && url.pathname === '/bridge/v1/health') {
+        return send(response, 200, { protocol: BRIDGE_SERVER_PROTOCOL, status: 'ok' });
+      }
+      if (request.method === 'GET' && url.pathname === '/bridge/v1/events') {
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-store, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        sendBridgeEvent(response, 'connected', { protocol: BRIDGE_STREAM_PROTOCOL });
+        bridgeStreams.add(response);
+        const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 20_000);
+        heartbeat.unref();
+        request.on('close', () => {
+          clearInterval(heartbeat);
+          bridgeStreams.delete(response);
+        });
+        await publishReadyBridgeDeliveries();
+        return;
+      }
+      const deliveryMatch = url.pathname.match(/^\/bridge\/v1\/deliveries\/([^/]+)$/);
+      if (deliveryMatch && request.method === 'GET') {
+        const delivery = await bridgeQueue.get(decodeURIComponent(deliveryMatch[1]));
+        return delivery ? send(response, 200, delivery) : send(response, 404, { error: 'delivery not found' });
+      }
+      const acknowledgementMatch = url.pathname.match(/^\/bridge\/v1\/deliveries\/([^/]+)\/ack$/);
+      if (acknowledgementMatch && request.method === 'POST') {
+        const payload = await body(request);
+        const item = await bridgeQueue.acknowledge(
+          decodeURIComponent(acknowledgementMatch[1]),
+          payload.status,
+          payload.code,
+        );
+        return item ? send(response, 200, { ok: true, deliveryId: item.id, status: item.status }) : send(response, 404, { error: 'delivery not found' });
+      }
+      return send(response, 404, { error: 'not found' });
+    }
+    if (url.pathname === '/dashboard/session') {
+      if (!config.dashboard.enabled) return send(response, 404, { error: 'not found' });
+      if (request.method !== 'POST') return send(response, 405, { error: 'method not allowed' }, { Allow: 'POST' });
+      const remoteAddress = request.socket.remoteAddress ?? 'unknown';
+      if (dashboardAuth.rateLimited(remoteAddress)) {
+        return send(response, 429, { error: 'too many attempts' }, { 'Retry-After': '60' });
+      }
+      const payload = await body(request);
+      const supplied = payload.accessToken ?? payload.access_token ?? payload.token ?? '';
+      if (!dashboardAuth.verifyAccessToken(supplied, remoteAddress)) {
+        return send(response, 401, { error: 'invalid credentials' });
+      }
+      const session = dashboardAuth.createSession();
+      // 跨源直连必须由调用方显式选择 header 模式；同源模式仍只下发
+      // HttpOnly Cookie，避免普通 Dashboard 前端接触会话 token。
+      const headerMode = String(payload.mode ?? '').toLowerCase() === 'header';
+      log('dashboard_session_created', { sessionExpiresAt: session.expiresAt, headerMode });
+      const responseBody = {
+        ok: true,
+        expiresAt: session.expiresAt,
+        profile: 'read-only-dashboard',
+      };
+      if (headerMode) return send(response, 200, { ...responseBody, token: session.token });
+      return send(response, 200, responseBody, { 'Set-Cookie': dashboardAuth.sessionCookie(session.token) });
+    }
+    if (url.pathname === '/dashboard/logout') {
+      if (request.method !== 'POST') return send(response, 405, { error: 'method not allowed' }, { Allow: 'POST' });
+      dashboardAuth.destroyRequestSession(request);
+      return send(response, 200, { ok: true }, { 'Set-Cookie': dashboardAuth.clearCookie() });
+    }
+    if (url.pathname.startsWith('/dashboard/api/')) {
+      if (!dashboardAuth.validateRequest(request)) return send(response, 401, { error: 'unauthorized' });
+      if (url.pathname === '/dashboard/api/interactions') {
+        if (request.method !== 'POST') return send(response, 405, { error: 'method not allowed' }, { Allow: 'POST' });
+        try {
+          const event = dashboardInteractionFromHttp(await body(request));
+          const result = await recordConversationEvent(event, 'dashboard');
+          const bridge = await enqueueDashboardInteraction(event, result);
+          return send(response, 200, { ...result, bridge });
+        } catch (error) {
+          return send(response, 400, { error: error.message });
+        }
+      }
+      if (url.pathname === '/dashboard/api/bridge/deliveries') {
+        if (!config.bridge.enabled) return send(response, 503, { error: 'bridge disabled' });
+        if (request.method === 'GET') {
+          const items = await bridgeQueue.list({ limit: url.searchParams.get('limit') });
+          return send(response, 200, { items: items.map(({ message, ...item }) => ({ ...item, hasMessage: Boolean(message) })) });
+        }
+        if (request.method === 'POST') {
+          try {
+            const input = bridgeDeliveryFromDashboard(await body(request));
+            const result = await bridgeQueue.enqueue(input);
+            await publishReadyBridgeDeliveries();
+            return send(response, result.duplicate ? 200 : 201, {
+              queued: true,
+              duplicate: result.duplicate,
+              deliveryId: result.delivery.id,
+              deliverAfter: result.delivery.deliverAfter,
+            });
+          } catch (error) {
+            return send(response, 400, { error: error.message });
+          }
+        }
+        return send(response, 405, { error: 'method not allowed' }, { Allow: 'GET, POST' });
+      }
+      if (url.pathname === '/dashboard/api/cabin/note') {
+        if (request.method === 'POST') {
+          try {
+            const result = await cabin.addNote(cabinNoteInput(await body(request)));
+            let bridge = null;
+            if (result.note.from === 'user' && !result.duplicate) {
+              bridge = await enqueueCabinNotice({
+                eventId: result.note.eventId,
+                message: result.note.locked
+                  ? `${config.identity.notificationRecipient}在小屋里留了一封上锁的信。你可以知道它存在，但在对方主动开锁前不能读取正文。`
+                  : `${config.identity.notificationRecipient}在小屋里留了一封已经允许你阅读的信。请通过“小屋收件箱”读取。`,
+              });
+            }
+            return send(response, result.duplicate ? 200 : 201, { ...result, bridge });
+          } catch (error) {
+            return send(response, 400, { error: error.message });
+          }
+        }
+        if (request.method === 'PATCH') {
+          try {
+            const payload = await body(request);
+            if (payload.read === true || payload.read_all === true) {
+              return send(response, 200, await cabin.markAiNotesRead(payload.ids));
+            }
+            if (typeof payload.locked === 'boolean') {
+              const note = await cabin.setNoteLock(payload.id, payload.locked);
+              if (!note) return send(response, 404, { error: 'note not found' });
+              let bridge = null;
+              if (!note.locked) {
+                bridge = await enqueueCabinNotice({
+                  eventId: `unlock:${note.eventId}`,
+                  message: `${config.identity.notificationRecipient}刚刚打开了小屋里那封信的锁，现在允许你通过“小屋收件箱”读取正文。`,
+                });
+              }
+              return send(response, 200, { note, bridge });
+            }
+            return send(response, 400, { error: 'unsupported note update' });
+          } catch (error) {
+            return send(response, 400, { error: error.message });
+          }
+        }
+        return send(response, 405, { error: 'method not allowed' }, { Allow: 'POST, PATCH' });
+      }
+      if (url.pathname === '/dashboard/api/cabin/ledger') {
+        try {
+          if (request.method === 'POST') {
+            const result = await cabin.addLedger(cabinLedgerInput(await body(request)));
+            const bridge = result.duplicate ? null : await enqueueCabinNotice({
+              eventId: result.entry.eventId,
+              message: `${config.identity.notificationRecipient}在恋爱账本里记下了一笔${result.entry.type === 'expense' ? '支出' : '收入'}：${result.entry.item}，金额 ${result.entry.amount.toFixed(2)}。`,
+            });
+            return send(response, result.duplicate ? 200 : 201, { ...result, bridge });
+          }
+          if (request.method === 'PATCH') {
+            const payload = await body(request);
+            const entry = await cabin.updateLedger(payload.id, payload);
+            if (!entry) return send(response, 404, { error: 'ledger entry not found' });
+            const bridge = await enqueueCabinNotice({
+              eventId: `ledger-edit:${entry.id}:${Date.now()}`,
+              message: `${config.identity.notificationRecipient}更新了恋爱账本中的“${entry.item}”。`,
+            });
+            return send(response, 200, { entry, bridge });
+          }
+          if (request.method === 'DELETE') {
+            const payload = await body(request);
+            const entry = await cabin.deleteLedger(payload.id);
+            if (!entry) return send(response, 404, { error: 'ledger entry not found' });
+            const bridge = await enqueueCabinNotice({
+              eventId: `ledger-delete:${entry.id}:${Date.now()}`,
+              message: `${config.identity.notificationRecipient}从恋爱账本里删除了“${entry.item}”。`,
+            });
+            return send(response, 200, { deleted: true, entry, bridge });
+          }
+        } catch (error) {
+          return send(response, 400, { error: error.message });
+        }
+        return send(response, 405, { error: 'method not allowed' }, { Allow: 'POST, PATCH, DELETE' });
+      }
+      if (request.method !== 'GET') return send(response, 405, { error: 'method not allowed' }, { Allow: 'GET' });
+      const payload = await dashboardPayload(url.pathname, url);
+      return payload ? send(response, 200, payload) : send(response, 404, { error: 'not found' });
+    }
     if (config.mcp.enabled && mcpPath(url)) {
       if (!mcpAuthorized(request, url)) {
         if (oauth.enabled) response.setHeader('WWW-Authenticate', oauth.wwwAuthenticate());
@@ -553,6 +1035,14 @@ const server = createServer(async (request, response) => {
           };
         },
         handoffNote: async (note) => saveHandoffNote(note, 'mcp'),
+        cabinInbox: async () => cabin.unlockedUserNotes(),
+        cabinNote: async (note) => cabin.addNote({ ...note, from: 'ai', locked: false }),
+        // 心潮念网关：把 OB 记忆工具经心潮同一端点暴露/转发。
+        listObTools: async () => {
+          if (!config.ombre.readEnabled) return [];
+          return ombre.listTools();
+        },
+        callOb: async (name, args) => ombre.call(name, args),
       });
       if (payload?.method === 'initialize' || payload?.method === 'tools/call') {
         log('mcp_request', {
@@ -568,6 +1058,11 @@ const server = createServer(async (request, response) => {
       });
     }
     if (!authorized(request)) return send(response, 401, { error: 'unauthorized' });
+
+    if (request.method === 'GET' && url.pathname.startsWith('/v1/dashboard/')) {
+      const payload = await dashboardPayload(url.pathname, url);
+      return payload ? send(response, 200, payload) : send(response, 404, { error: 'not found' });
+    }
 
     if (request.method === 'GET' && url.pathname === '/v1/state') {
       return send(response, 200, await store.read());
@@ -633,11 +1128,16 @@ const server = createServer(async (request, response) => {
 
 server.listen(config.port, '0.0.0.0', async () => {
   await store.read();
-  log('service_started', { port: config.port, shadow: config.shadowMode, modelEnabled: config.model.enabled, barkEnabled: config.bark.enabled });
+  await cabin.init();
+  if (config.bridge.enabled) await bridgeQueue.init();
+  log('service_started', { port: config.port, shadow: config.shadowMode, modelEnabled: config.model.enabled, barkEnabled: config.bark.enabled, bridgeEnabled: config.bridge.enabled });
 });
 
 const timer = setInterval(() => runCycle().catch((error) => log('cycle_failed', { message: error.message })), config.settleIntervalMinutes * 60_000);
 timer.unref();
+
+const bridgeTimer = setInterval(() => publishReadyBridgeDeliveries().catch((error) => log('bridge_publish_failed', { message: error.message })), config.bridge.pollSeconds * 1000);
+bridgeTimer.unref();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => server.close(() => process.exit(0)));

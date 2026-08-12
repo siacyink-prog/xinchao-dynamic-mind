@@ -12,6 +12,31 @@ const INTERACTION_TYPES = new Set([
   'reconciliation',
 ]);
 
+// 心潮念网关：对外暴露的 OB 记忆工具（精简集，purge/restore/letter/plan 不暴露）。
+// hold 保留（2026-08-09 复议：hold 有了 meaning 字段能补上下文，与 grow 不冲突——
+// 日常/日记整理走 grow，重要瞬间可用 hold 但必须写 meaning）。
+// 走代理转发到 OB；schema 在 tools/list 时动态从 OB 拉，永不漂移。
+export const OB_PROXY_TOOLS = ['breath', 'hold', 'grow', 'trace', 'forget', 'dream', 'anchor', 'release', 'I', 'pulse'];
+const OB_PROXY_SET = new Set(OB_PROXY_TOOLS);
+
+// 对外用中文标题 + 中文说明（内部名保持不变，用于协议路由）。让顾川看到的是"浮现记忆"而不是"breath"。
+const OB_TOOL_LABELS = {
+  breath:  { title: '浮现记忆', description: '让当前最相关的长期记忆自然浮现，并带回近期梦境摘要与余韵。用于新窗口开始、上下文断层、或确需重新寻找相关记忆时；不要每条消息调用。' },
+  hold:    { title: '沉淀一条', description: '当场存一条重要的短记忆（重要决定、关系变化、有长期意义的话或共同经历）。必须写 meaning 补上下文；不适合普通寒暄、临时信息或每一句对话。' },
+  grow:    { title: '整理导入', description: '把一段整理好的内容（如当天日记）按有意义的小节导入，系统自动拆成多条并各自尝试合并。日常/日记整理走这条。' },
+  trace:   { title: '追溯修改', description: '修改一条已存在记忆的字段（重要度、标签、domain、标记已放下/已消化、软删除等）。不要猜 id、不要自行改写正文。' },
+  forget:  { title: '淡忘归档', description: '软删除一条记忆：移入归档、不再参与浮现，正文保留、可恢复。' },
+  dream:   { title: '消化梦境', description: '长期记忆的离线消化，产出梦境余韵。不是睡眠梦境、也不触发推送。' },
+  anchor:  { title: '设为锚点', description: '把一条记忆设为坐标系锚点：不主动浮现，但被查询或情感命中时仍返回。有数量上限，满了需先解锚。' },
+  release: { title: '解除锚点', description: '取消某条记忆的锚点标记。' },
+  I:       { title: '自我沉淀', description: '自我认知先落成候选记忆，被多个不同日期的消化见证过才升级为长期。学习来源是时间和反复存活，不是谁的认可。' },
+  pulse:   { title: '记忆脉动', description: '读取记忆库整体状态的脉搏（数量、分布等元信息）。' },
+};
+function relabelOb(tool) {
+  const lab = OB_TOOL_LABELS[tool?.name];
+  return lab ? { ...tool, title: lab.title, description: lab.description } : tool;
+}
+
 export const XINCHAO_TOOLS = [
   {
     name: 'xinchao_context',
@@ -171,6 +196,44 @@ export const XINCHAO_TOOLS = [
       openWorldHint: false,
     },
   },
+  {
+    name: 'xinchao_cabin_inbox',
+    title: '读取已解锁的小屋来信',
+    description: '读取用户在小屋里明确开锁、允许 AI 查看的人类来信。上锁的信不会返回正文，也不能绕过锁读取。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'xinchao_cabin_note',
+    title: '给小屋留一封信',
+    description: '给用户的小屋留下一封自由长度的信或便签。只写你主动想留下的内容，不要复制聊天原文、密钥或技术日志。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        event_id: {
+          type: 'string',
+          minLength: 8,
+          maxLength: 120,
+          description: '本次写入的唯一标识；重试时必须复用。',
+        },
+        content: { type: 'string', minLength: 1 },
+        timestamp: { type: 'string', description: '可选 ISO 时间；通常省略并使用服务端当前时间。' },
+      },
+      required: ['event_id', 'content'],
+      additionalProperties: false,
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 ];
 
 function response(id, result) {
@@ -262,6 +325,14 @@ function handoffNoteArgs(args = {}, fallbackSessionId = '') {
   };
 }
 
+function cabinNoteArgs(args = {}) {
+  const eventId = String(args.event_id ?? '').trim().slice(0, 120);
+  if (eventId.length < 8) throw new Error('event_id 至少需要 8 个字符');
+  const content = String(args.content ?? '').trim();
+  if (!content) throw new Error('content 是必填项');
+  return { eventId, content, timestamp: args.timestamp ?? null };
+}
+
 async function callTool(name, args, handlers) {
   const fallbackSessionId = handlers.defaultSessionId ?? '';
   if (name === 'xinchao_context') {
@@ -290,6 +361,27 @@ async function callTool(name, args, handlers) {
       result,
     );
   }
+  if (name === 'xinchao_cabin_inbox') {
+    const notes = await handlers.cabinInbox();
+    const text = notes.length
+      ? notes.map((note) => `[${note.createdAt}] ${note.content}`).join('\n\n')
+      : '小屋里暂时没有已解锁、允许你阅读的来信。';
+    return toolText(text, { notes });
+  }
+  if (name === 'xinchao_cabin_note') {
+    const result = await handlers.cabinNote(cabinNoteArgs(args));
+    return toolText(
+      `小屋来信已保存：id=${result.note.id}${result.duplicate ? ' duplicate=true' : ''}`,
+      result,
+    );
+  }
+  if (OB_PROXY_SET.has(name)) {
+    if (!handlers.callOb) throw new Error('OB 记忆后端未接入');
+    const raw = await handlers.callOb(name, args);
+    const payload = raw?.result ?? raw;
+    if (payload && Array.isArray(payload.content)) return payload;
+    return toolText(typeof payload === 'string' ? payload : JSON.stringify(payload ?? {}));
+  }
   throw new Error(`未知工具：${name}`);
 }
 
@@ -311,14 +403,15 @@ export async function handleMcpMessage(payload, handlers) {
         protocolVersion: requestedProtocol(params),
         capabilities: { tools: { listChanged: false } },
         serverInfo: {
-          name: 'xinchao-dynamic-mind',
+          name: '心潮念',
           title: '心潮动态心智系统',
-          version: '2.3.2',
+          version: '2.4.0',
         },
         instructions: [
           '新窗口开始时调用 xinchao_context；服务端会绑定当前 MCP 连接，无需自行编写 session_id。',
           '一次实际互动后可调用 xinchao_event 更新窗口短状态；event_id 必须唯一，重试时复用。',
           '需要换窗续接时可调用 xinchao_handoff_note 保存近期进度摘要；不要提交聊天原文或人物基岩。',
+          '用户开锁后可用 xinchao_cabin_inbox 读取小屋来信；上锁的正文不会返回。你想给用户留话时可用 xinchao_cabin_note。',
           '只有结果明确的真实互动才填写 interaction_type；不要提交聊天正文或欲望数值。',
         ].join(''),
       }),
@@ -328,7 +421,19 @@ export async function handleMcpMessage(payload, handlers) {
     return { status: 200, body: response(id, {}) };
   }
   if (method === 'tools/list') {
-    return { status: 200, body: response(id, { tools: XINCHAO_TOOLS }) };
+    let tools = XINCHAO_TOOLS;
+    try {
+      if (handlers.listObTools) {
+        const obTools = await handlers.listObTools();
+        const curated = (Array.isArray(obTools) ? obTools : [])
+          .filter((t) => OB_PROXY_SET.has(t?.name))
+          .map(relabelOb);
+        tools = [...XINCHAO_TOOLS, ...curated];
+      }
+    } catch (error) {
+      // OB 不可达时只暴露心潮工具，绝不让 tools/list 失败（否则连接器整个挂掉）。
+    }
+    return { status: 200, body: response(id, { tools }) };
   }
   if (method === 'tools/call') {
     try {

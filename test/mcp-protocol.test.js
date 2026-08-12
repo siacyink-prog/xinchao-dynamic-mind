@@ -31,7 +31,7 @@ function handlers() {
   };
 }
 
-test('MCP initialize advertises the 2.3.2 tool server', async () => {
+test('MCP initialize advertises the upgraded tool server', async () => {
   const result = await handleMcpMessage({
     jsonrpc: '2.0',
     id: 1,
@@ -40,8 +40,8 @@ test('MCP initialize advertises the 2.3.2 tool server', async () => {
   }, handlers());
   assert.equal(result.status, 200);
   assert.equal(result.body.result.protocolVersion, '2025-06-18');
-  assert.equal(result.body.result.serverInfo.name, 'xinchao-dynamic-mind');
-  assert.equal(result.body.result.serverInfo.version, '2.3.2');
+  assert.equal(result.body.result.serverInfo.name, '心潮念');
+  assert.equal(result.body.result.serverInfo.version, '2.4.0');
   assert.equal(result.body.result.capabilities.tools.listChanged, false);
 });
 
@@ -53,7 +53,7 @@ test('tools/list exposes context, event and short handoff note tools', async () 
   }, handlers());
   assert.deepEqual(
     result.body.result.tools.map((tool) => tool.name),
-    ['xinchao_context', 'xinchao_event', 'xinchao_handoff_note'],
+    ['xinchao_context', 'xinchao_event', 'xinchao_handoff_note', 'xinchao_cabin_inbox', 'xinchao_cabin_note'],
   );
   assert.equal(result.body.result.tools[0].annotations.readOnlyHint, true);
   assert.equal(result.body.result.tools[1].annotations.destructiveHint, false);
