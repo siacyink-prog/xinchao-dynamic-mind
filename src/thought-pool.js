@@ -54,3 +54,24 @@ export function obsessionBonus(pool, key) {
   const hit = (pool?.obsessions ?? []).find((o) => o.key === key);
   return hit ? hit.intensity * 0.15 : 0;
 }
+
+// 输出回流：他自己说出口的一次表达，回过头在思维池里给对应驱力留一道痕。
+// 走这条通道而不是直接加驱力，是为了让"说了 → 想念涨"这件事天然收敛：
+// 一次性的表达只会落一条会衰减的 flash，自己散掉；只有反复表达同一件事
+// （同一 key 在还没衰减完时被再次强化）才累积到 PROMOTE_THRESHOLD 并熬过
+// PROMOTE_MIN_AGE，升成 obsession —— 那时才会有界地把驱力顶上去几次然后退休。
+// 执念本来就是这么形成的，所以不完全阻尼；上限由既有池机制（MAX_FEEDBACKS）
+// 和输出本身的发送频率闸门共同兜底。
+export function reinforceThought(pool, key, text, amount = 0.30) {
+  pool.flash ??= [];
+  const step = Math.min(1, Math.max(0, Number(amount) || 0));
+  const existing = pool.flash.find((t) => t.key === key);
+  if (existing) {
+    existing.intensity = Math.min(1, existing.intensity + step);
+    if (text) existing.text = text;
+    return { key, intensity: Number(existing.intensity.toFixed(4)), seeded: false };
+  }
+  addFlashThought(pool, key, text, step);
+  const created = pool.flash.find((t) => t.key === key);
+  return { key, intensity: Number((created?.intensity ?? step).toFixed(4)), seeded: true };
+}

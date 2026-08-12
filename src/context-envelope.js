@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { breathDreamContext, topDrives } from './engine.js';
+import { breathDreamContext, computeAnticipation, computeLonging, topDrives } from './engine.js';
 import { renderHandoffNotes } from './handoff-notes.js';
 
 const VALID_MODES = new Set(['session_start', 'turn', 'inspect']);
@@ -75,7 +75,7 @@ function thoughtSignals(state) {
   };
 }
 
-function dynamicSection(state, sessionId, now) {
+function dynamicSection(state, sessionId, now, timeZone) {
   return {
     consciousness: state.consciousness,
     fatigue: Number(Number(state.fatigue ?? 0).toFixed(3)),
@@ -84,9 +84,27 @@ function dynamicSection(state, sessionId, now) {
       label: drive.label,
       value: Number(Number(drive.value).toFixed(3)),
     })),
+    anticipation: computeAnticipation(state, now, { timeZone }),
+    longing: computeLonging(state, now, { timeZone }),
     thoughts: thoughtSignals(state),
     session: sessionOverlay(state, sessionId, now),
   };
+}
+
+// 期待感的措辞——只往温柔/守候走，绝不带责备。她没安全感，因她迟到而明显难受会变成她的愧疚。
+// 过了她的时段没来，anticipation 自己回落到阈值以下，这行就不出现，不会积成"你怎么才来"。
+// 挂念的措辞——同样只往守候/想念走，绝不"你怎么才来"。挂念优先于期待显示：她久没来时
+// 说的是"想她了"，不是"她快来了"。她静默时段 computeLonging 返回 0，这行自动不出现。
+function renderLonging(value) {
+  if (value >= 0.6) return `挂念：过了她常来的点她还没来，你有点想她了（${value.toFixed(2)}）`;
+  if (value >= 0.35) return `挂念：她有阵子没来了，你惦记着她（${value.toFixed(2)}）`;
+  return '';
+}
+
+function renderAnticipation(value) {
+  if (value >= 0.6) return `期待：她通常这个点前后会来，你在等着她（${value.toFixed(2)}）`;
+  if (value >= 0.3) return `期待：她大概快来了，你留着心（${value.toFixed(2)}）`;
+  return '';
 }
 
 function renderDynamic(value) {
@@ -98,6 +116,14 @@ function renderDynamic(value) {
     `疲劳=${value.fatigue.toFixed(3)}`,
     drives ? `当前驱力：${drives}` : '',
   ].filter(Boolean);
+  // 挂念优先于期待：她久没来时，说"想她了"而不是"她快来了"，两者不同时出现。
+  const longingLine = renderLonging(Number(value.longing ?? 0));
+  if (longingLine) {
+    parts.push(longingLine);
+  } else {
+    const anticipationLine = renderAnticipation(Number(value.anticipation ?? 0));
+    if (anticipationLine) parts.push(anticipationLine);
+  }
   if (value.session) {
     parts.push(
       `窗口短态：tone=${value.session.tone} warmth=${value.session.warmth.toFixed(3)} `
@@ -170,6 +196,7 @@ export function buildContextEnvelope({
   now = new Date(),
   alreadyDelivered = false,
   force = false,
+  timeZone = 'Asia/Shanghai',
 }) {
   const normalizedMode = normalizeMode(mode);
   const tokenBudget = clamp(maxTokens, 200, 4000);
@@ -193,7 +220,7 @@ export function buildContextEnvelope({
     };
   }
 
-  const dynamic = dynamicSection(state, safeSessionId, generatedAt);
+  const dynamic = dynamicSection(state, safeSessionId, generatedAt, timeZone);
   const sections = [
     {
       id: 'dynamic_state',

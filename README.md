@@ -1,4 +1,4 @@
-# 心潮动态心智系统 2.3.2
+# 心潮动态心智系统 2.5.1 + Veyan profile
 
 ![心潮动态心智系统](docs/cover.png)
 
@@ -6,11 +6,10 @@
 
 > 心潮模拟可解释的动态状态，不宣称产生意识、情感或生命。核心状态机可离线运行；模型、长期记忆、OAuth 和通知均为可选适配器。
 
-## 2.3.2 更新重点
+## 当前底座与 Veyan 定制
 
 - **HTTP 便签闭环**：补齐 `POST /v1/handoff-note`，HTTP 前端与 MCP 客户端现在使用同一套有界、幂等的短期交接。
 - **在场时间修复**：heartbeat 和真实 `xinchao_event` 都会刷新 `lastHeartbeatAt`，避免在线时被自主推送误判为长期离线。
-- **在场安抚**：普通 heartbeat 每十分钟最多轻缓解一次靠近、惦记与无聊相关驱力；明确互动仍由 `xinchao_event` 单独结算。
 - **隐私版窗口 hook**：提供只发送会话 ID 与随机事件 ID 的 Claude Code 脚本，不上传提示词正文。
 - **稳定 MCP 窗口**：初始化时由服务端签发 `Mcp-Session-Id`，不再依赖模型临时编写窗口 ID。
 - **近期连续性**：Context Envelope 只携带动态短态、近期交接和可选的长期记忆召回，不替代客户端自己的核心指令或人物基岩。
@@ -21,6 +20,20 @@
 - **2200 tokens 默认预算**：用于短期状态和近期连续性；稳定核心资料仍由客户端单独完整读取。
 
 完整差异见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 可视化接入地基（开发中）
+
+当前仓库已经把 UI 与状态机拆开，并提供：
+
+- 默认脱敏的十二维 Dashboard Snapshot；
+- 不含正文的结构化潮汐时间线；
+- 面向网页 AI、本地 Agent、手机网页与自建后端的接入清单；
+- 独立 Dashboard 口令换取 HttpOnly 会话，浏览器无需接触 `SERVICE_TOKEN`；状态投影只读，小屋仅开放明确的留言、锁与账本写入；
+- 独立 [`Wake Bridge`](packages/wake-bridge/) 消息信封协议，为梦境余韵、思念内容和自主行动结果预留用户/AI 双通道。
+
+接口、环境变量和前端示例见 [可视化与多终端接入地基](docs/DASHBOARD-INTEGRATION.md)。视觉主题、花瓣与梦境星云可以独立迭代，不需要重写服务端。
+
+如果要把心潮建设成公开可注册、每人连接自己 AI 的服务，请先阅读 [多人平台 V1 产品与数据契约](docs/MULTI-TENANT-PLATFORM.md)。多人账号、小屋、数据库和任务调度属于独立平台层，不会侵入核心状态计算。
 
 ## 支持哪些终端
 
@@ -45,9 +58,14 @@
 - 可选 Bark 通知与跨类型去重。
 - 原子状态持久化与结构化转换日志。
 
-## 闻舟 TG-first 配置
+## 闻舟 TG-first 定制
 
-本 fork 提供可替换的驱动力配置文件与一套克制的 TG-first 初始值。部署和接入边界见 [docs/WENZHOU_TG_MVP.md](docs/WENZHOU_TG_MVP.md)。
+本分支在官方 2.5.x Dashboard、小屋、桥接与记忆共振底座上保留两项本地定制：
+
+- `DRIVE_PROFILE_PATH=/app/configs/wenzhou-tg.json`：加载克制的 TG-first 驱力谱；留空则使用官方默认值。
+- `HEARTBEAT_PRESENCE_RELIEF_COOLDOWN_MINUTES=10`：普通 heartbeat 在冷却期内最多轻缓解一次在场相关驱力，明确互动仍单独结算。
+
+旧状态会在首次结算时迁移到 schema 8；现役状态文件可继续使用。部署细节见 [WENZHOU_TG_MVP.md](docs/WENZHOU_TG_MVP.md)。
 
 ## 快速开始
 
@@ -104,6 +122,8 @@ https://xinchao.example.com/mcp
 | `xinchao_context` | 获取当前动态短态和近期连续性；同一窗口首次启动默认只交付一次 |
 | `xinchao_event` | 回传一次明确互动及有界窗口状态；`event_id` 用于幂等 |
 | `xinchao_handoff_note` | 保存限时近期进度摘要，不保存整段聊天原文 |
+| `xinchao_cabin_inbox` | 读取用户明确开锁的小屋来信；上锁正文永不返回 |
+| `xinchao_cabin_note` | AI 主动给用户的小屋留一封信或便签 |
 
 `session_id` 是可选覆盖值。正常情况下服务端会使用 MCP 连接自带的稳定窗口 ID。
 
@@ -127,7 +147,33 @@ Authorization: Bearer <SERVICE_TOKEN>
 | `POST` | `/v1/heartbeat` | 只刷新在场时间，不上传聊天正文 |
 | `POST` | `/v1/handoff-note` | 保存短期交接摘要 |
 | `POST` | `/v1/drive-feedback` | 管理端受控反馈接口 |
+| `GET` | `/v1/dashboard/snapshot` | 默认脱敏的可视化状态投影 |
+| `GET` | `/v1/dashboard/timeline` | 结构化变化时间线（无正文） |
+| `GET` | `/v1/dashboard/memory-map` | 从自己的 OB 读取脱敏记忆星图元数据 |
+| `GET` | `/v1/dashboard/connect` | 多端接入能力清单（无凭据） |
 | `POST` | `/mcp` | Streamable HTTP MCP |
+
+### 私密小屋接口
+
+小屋数据单独写入 `CABIN_STATE_PATH`（默认 `/app/state/cabin.json`），只保存用户或 AI
+明确提交的来信和账本记录，不保存聊天原文、提示词或密钥。网页使用 Dashboard 的
+HttpOnly 会话访问：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/dashboard/api/cabin` | 读取来信、未读数量、账本与汇总 |
+| `GET` | `/dashboard/api/snapshot` | 读取花瓣、状态与可选的真实一句话 |
+| `GET` | `/dashboard/api/memory-map` | 从这位用户自己的 OB 读取记忆星图元数据 |
+| `POST` / `PATCH` | `/dashboard/api/cabin/note` | 留信、标为已读、上锁或开锁 |
+| `POST` / `PATCH` / `DELETE` | `/dashboard/api/cabin/ledger` | 新增、编辑或删除账本记录 |
+
+用户来信默认上锁：连接桥只会通知 AI“有一封信”，不会携带正文。用户主动开锁后，
+AI 才能通过 `xinchao_cabin_inbox` 读取。重新上锁只会阻止之后的读取，无法撤回 AI
+已经读过的内容。
+
+花瓣旁的“一句话”只取自当前心潮自己的思绪池，不使用演示文案，也不会由网页猜测。
+考虑到它与梦境正文都可能包含私密内容，默认不会返回；自托管者明确设置
+`DASHBOARD_INCLUDE_PRIVATE_TEXT=true` 后，才会通过已鉴权的 Dashboard 会话展示。
 
 ## 心跳接入档位
 
@@ -194,6 +240,8 @@ CONTEXT_OMBRE_ENABLED=false
 - `SERVICE_TOKEN`、`MCP_PATH_TOKEN` 与 `OAUTH_APPROVAL_TOKEN` 必须彼此独立。
 - 服务默认绑定回环地址、使用只读容器、移除 Linux capabilities。
 - Context audit 只记录摘要与交付元数据。
+- Dashboard 使用与服务密钥不同的访问口令，并只签发 HttpOnly、SameSite 会话 Cookie。
+- Dashboard 默认隐藏梦境摘要和余韵文字；需要由自托管者显式开启。
 - `xinchao_event` 不接受聊天正文；交接便签也只应保存脱水后的近期进度。
 - 公开部署前请阅读 [SECURITY.md](SECURITY.md)。
 
@@ -208,10 +256,11 @@ npm test
 ## 项目结构
 
 ```text
-src/             状态机、MCP、OAuth 与可选适配器
+src/             状态机、MCP、OAuth、Dashboard 投影与可选适配器
 test/            Node.js 原生测试
 configs/         可替换提示词
 scripts/         本地配置、部署与烟雾测试
+packages/        可独立使用的 Wake Bridge 消息协议
 state/           运行状态挂载目录（不提交真实数据）
 memory-data/     可选外部心跳挂载目录
 ```

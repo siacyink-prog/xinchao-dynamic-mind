@@ -11,9 +11,9 @@ test('automatic dream writes identify themselves and never impersonate manual me
     breathMaxResults: 3,
     breathMaxTokens: 800,
   });
-  let captured;
+  const captured = [];
   client.call = async (name, args) => {
-    captured = { name, args };
+    captured.push({ name, args });
     return { result: { content: [{ type: 'text', text: '已保存 abcdef123456' }] } };
   };
 
@@ -23,9 +23,11 @@ test('automatic dream writes identify themselves and never impersonate manual me
     awareness: '记得回来',
   });
 
-  assert.equal(captured.name, 'hold');
-  assert.equal(captured.args.auto, true);
-  assert.equal(captured.args.source, 'xinchao-dream');
-  assert.equal(captured.args.importance, 7);
-  assert.equal(captured.args.tags, 'dream');
+  assert.equal(captured[0].name, 'hold');
+  assert.equal(captured[0].args.auto, true);
+  assert.equal(captured[0].args.source, 'xinchao-dream');
+  assert.equal(captured[0].args.importance, 7);
+  assert.equal(captured[0].args.tags, 'dream');
+  assert.equal(captured[1].name, 'trace');
+  assert.equal(captured[1].args.dont_surface, 1);
 });
