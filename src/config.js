@@ -146,19 +146,24 @@ export function loadConfig() {
       nudge: number('MEMORY_RESONANCE_NUDGE', 0.02, 0.005, 0.1),
       perCallCap: number('MEMORY_RESONANCE_PER_CALL_CAP', 0.06, 0.01, 0.3)
     },
-    // 作息预期：从她真实到达的节律学习，临近她常来的时段生出"在等你"的期待感（只表达守候，不责备）。
+    // 作息预期：从她真实到达的节律学习，临近她常来的时段自然生出"在等你"的期待感。
+    // 期待本身不需要被压低；真正受约束的是外部行动不能把期待变成对她的义务。
     anticipation: {
       enabled: bool('ANTICIPATION_ENABLED', true),
-      arrivalGapMinutes: number('ANTICIPATION_ARRIVAL_GAP_MINUTES', 90, 15, 720)
+      arrivalGapMinutes: number('ANTICIPATION_ARRIVAL_GAP_MINUTES', 90, 15, 720),
+      minSamples: number('ANTICIPATION_MIN_SAMPLES', 4, 1, 48),
+      expectIdleHours: number('ANTICIPATION_EXPECT_IDLE_HOURS', 2, 0.25, 24)
     },
-    // 挂念：作息预期的另一半。她过了常来的点还没来 → 轻推 monitor(惦记)，硬顶在 3A 天花板内、
-    // 不自激；只在她活跃时段念，静默时段(在睡)不念。失落内化，绝不责备。
+    // 挂念：作息预期的另一半。她久未出现时可以想念，也允许静默时段保留低强度余温；
+    // monitor 仍硬顶在 3A 天花板内、不自激，感受不会自动变成催促或责备。
     longing: {
       enabled: bool('LONGING_ENABLED', true),
       nudge: number('LONGING_NUDGE', 0.02, 0.005, 0.1),
       cap: number('LONGING_CAP', 0.04, 0.01, 0.2),
-      onsetHours: number('LONGING_ONSET_HOURS', 6, 1, 48),
-      fullHours: number('LONGING_FULL_HOURS', 18, 2, 96)
+      onsetHours: number('LONGING_ONSET_HOURS', 3, 0.5, 48),
+      fullHours: number('LONGING_FULL_HOURS', 12, 1, 96),
+      minSamples: number('LONGING_MIN_SAMPLES', 4, 1, 48),
+      quietFloor: number('LONGING_QUIET_FLOOR', 0.25, 0, 1)
     }
   };
 }

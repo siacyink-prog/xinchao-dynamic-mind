@@ -123,7 +123,7 @@ async function runCycle() {
     let daytimeSent = false;
 
     // 挂念：她过了常来的点还没来 → 轻推 monitor(惦记) 进数值（不只在上下文）。
-    // applyLongingNudge 硬顶在 3A 天花板内、不自激；她的静默时段 computeLonging 返回 0，不念。
+    // applyLongingNudge 硬顶在 3A 天花板内、不自激；静默时段也允许保留低强度挂念。
     if (config.longing.enabled) {
       const longing = computeLonging(state, now, { timeZone: config.settle.timeZone, ...config.longing });
       const preview = longing > 0 ? applyLongingNudge(state, longing, now, config.longing) : { changed: false };

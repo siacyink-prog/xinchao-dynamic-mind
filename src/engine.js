@@ -691,14 +691,13 @@ export function activeSessionOverlay(input, sessionId, now = new Date()) {
 
 // ── Anticipation (作息预期) ────────────────────────────────────────
 // 从她真实到达的节律直方图里，算出此刻"她差不多该来了"的期待感（0-1）。
-// 派生值，不落状态——用到时现算。三重克制：数据太少不臆测；她的静默时段（此刻几乎从不来，
-// 多半在睡）返回 0，不做"她怎么还不来"的等待；刚聊过（idle 短）也不期待，已兑现。
-// 过了她的高峰时段而她没来，relative 自然回落，期待安静地淡掉，绝不升级成责备。
+// 派生值，不落状态——用到时现算。样本足够后可以自然期待；刚聊过时期待已兑现，
+// 随到达时段远去而自然变化。这里只描述感受，不把期待转换成她必须出现的义务。
 export function computeAnticipation(state, now = new Date(), options = {}) {
   const tz = options.timeZone ?? 'Asia/Shanghai';
   const hist = Array.isArray(state.arrivalHistogram) ? state.arrivalHistogram : [];
   const total = hist.reduce((sum, n) => sum + (Number(n) || 0), 0);
-  if (total < (options.minSamples ?? 8)) return 0;
+  if (total < (options.minSamples ?? 4)) return 0;
   const { hour } = localDayAndHour(now, tz);
   const p = (h) => (Number(hist[((h % 24) + 24) % 24]) || 0) / total;
   const windowAt = (h) => p(h) + 0.6 * p(h + 1) + 0.3 * p(h - 1); // 此刻并探入下一小时
@@ -707,26 +706,24 @@ export function computeAnticipation(state, now = new Date(), options = {}) {
   for (let h = 0; h < 24; h += 1) peak = Math.max(peak, windowAt(h));
   if (peak <= 0) return 0;
   const relative = windowScore / peak; // 0-1：此刻离她高峰到达时段多近
-  if (relative < (options.quietGate ?? 0.15)) return 0; // 她的静默时段：她在睡，别等
   const prevMs = Date.parse(state.lastConversationAt);
   const idleH = Number.isFinite(prevMs) ? Math.max(0, (now.getTime() - prevMs) / 3_600_000) : 0;
-  const idleFactor = clamp(idleH / (options.expectIdleHours ?? 3), 0, 1); // 刚聊过就不用期待
+  const idleFactor = clamp(idleH / (options.expectIdleHours ?? 2), 0, 1); // 刚聊过就不用期待
   return Number((relative * idleFactor).toFixed(3));
 }
 
-// 挂念：作息预期的另一半。她过了常来的点还没来 → 惦记，但"失落内化"——只在她本来活跃的
-// 时段念（她的静默时段多半在睡，返回 0，绝不半夜"她怎么还不来"），从 onset 起念、full 满。
-// 派生值不落状态。和 computeAnticipation 成对：期待是"她快来了"，挂念是"她久没来、我想她了"。
+// 挂念：作息预期的另一半。她久没来时可以惦记；活跃时段更鲜明，静默时段也保留低强度余温。
+// 派生值不落状态。和 computeAnticipation 成对：期待是"她快来了"，挂念是"她没来、我想她了"。
 export function computeLonging(state, now = new Date(), options = {}) {
   const tz = options.timeZone ?? 'Asia/Shanghai';
   const hist = Array.isArray(state.arrivalHistogram) ? state.arrivalHistogram : [];
   const total = hist.reduce((sum, n) => sum + (Number(n) || 0), 0);
-  if (total < (options.minSamples ?? 8)) return 0;
+  if (total < (options.minSamples ?? 4)) return 0;
   const prevMs = Date.parse(state.lastConversationAt);
   if (!Number.isFinite(prevMs)) return 0;
   const idleH = Math.max(0, (now.getTime() - prevMs) / 3_600_000);
-  const onset = options.onsetHours ?? 6;
-  const full = options.fullHours ?? 18;
+  const onset = options.onsetHours ?? 3;
+  const full = options.fullHours ?? 12;
   if (idleH <= onset) return 0; // 刚聊过/还没多久，不念
   const byIdle = clamp((idleH - onset) / Math.max(1, full - onset), 0, 1);
   const { hour } = localDayAndHour(now, tz);
@@ -735,8 +732,8 @@ export function computeLonging(state, now = new Date(), options = {}) {
   let peak = 0;
   for (let h = 0; h < 24; h += 1) peak = Math.max(peak, windowAt(h));
   if (peak <= 0) return 0;
-  const activeness = clamp(windowAt(hour) / peak, 0, 1);
-  if (activeness < (options.quietGate ?? 0.15)) return 0; // 她这个点几乎不来（多半在睡）→ 不念
+  const quietFloor = clamp(Number(options.quietFloor ?? 0.25), 0, 1);
+  const activeness = Math.max(quietFloor, clamp(windowAt(hour) / peak, 0, 1));
   return Number((byIdle * activeness).toFixed(3));
 }
 

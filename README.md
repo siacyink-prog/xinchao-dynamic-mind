@@ -62,7 +62,7 @@
 
 本分支在官方 2.5.x Dashboard、小屋、桥接与记忆共振底座上保留两项本地定制：
 
-- `DRIVE_PROFILE_PATH=/app/configs/wenzhou-tg.json`：加载克制的 TG-first 驱力谱；留空则使用官方默认值。
+- `DRIVE_PROFILE_PATH=/app/configs/wenzhou-tg.json`：加载关系感知的 TG-first 驱力谱；期待、挂念和社交欲可以自然生长，外部行动仍保持非催促边界；留空则使用官方默认值。
 - `HEARTBEAT_PRESENCE_RELIEF_COOLDOWN_MINUTES=10`：普通 heartbeat 在冷却期内最多轻缓解一次在场相关驱力，明确互动仍单独结算。
 
 旧状态会在首次结算时迁移到 schema 8；现役状态文件可继续使用。部署细节见 [WENZHOU_TG_MVP.md](docs/WENZHOU_TG_MVP.md)。

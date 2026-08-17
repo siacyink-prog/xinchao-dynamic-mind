@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeSessionOverlay, applyConversationEvent, applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, barkDuplicateCheck, barkMessageSimilarity, breathDreamContext, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, proactiveBarkAllowed, recentBarkHistory, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState } from '../src/engine.js';
+import { activeSessionOverlay, applyConversationEvent, applyDriveFeedback, applyOmbreHeartbeat, barkAllowed, barkDuplicateCheck, barkMessageSimilarity, breathDreamContext, computeAnticipation, computeLonging, contactIdleAllowed, daytimeEmergenceAllowed, dreamAllowed, newState, proactiveBarkAllowed, recentBarkHistory, recordBark, recordDaytimeEmergence, recordDream, scheduleDaytimeEmergence, settleAndApplyConversationEvent, settleAndApplyHeartbeat, settleState } from '../src/engine.js';
 import { DIMENSIONS } from '../src/dimensions.js';
 
 test('idle time enters sleep and repeated settlement is idempotent at same instant', () => {
@@ -61,6 +61,24 @@ test('the sidecar can decide a Bark independently after the idle threshold', () 
   assert.equal(proactiveBarkAllowed(state, new Date('2026-07-16T06:00:00Z'), 12, 6, 0.42), false);
   assert.equal(proactiveBarkAllowed(state, new Date('2026-07-16T15:00:00Z'), 12, 6, 0.42), true);
   assert.equal(barkAllowed(state, new Date('2026-07-16T04:00:00Z'), 3, 6, 'dream'), true);
+});
+
+test('anticipation forms after a small real arrival history', () => {
+  const now = new Date('2026-08-17T12:00:00Z'); // 20:00 in Shanghai
+  const state = newState(new Date('2026-08-17T08:00:00Z'));
+  state.lastConversationAt = '2026-08-17T08:00:00.000Z';
+  state.arrivalHistogram = Array(24).fill(0);
+  state.arrivalHistogram[20] = 4;
+  assert.equal(computeAnticipation(state, now, { timeZone: 'Asia/Shanghai' }), 1);
+});
+
+test('longing keeps a quiet residue outside her usual arrival hours', () => {
+  const now = new Date('2026-08-17T19:00:00Z'); // 03:00 in Shanghai
+  const state = newState(new Date('2026-08-17T04:00:00Z'));
+  state.lastConversationAt = '2026-08-17T04:00:00.000Z';
+  state.arrivalHistogram = Array(24).fill(0);
+  state.arrivalHistogram[20] = 4;
+  assert.equal(computeLonging(state, now, { timeZone: 'Asia/Shanghai' }), 0.25);
 });
 
 test('Bark history spans message kinds and keeps only the latest eight sends', () => {
