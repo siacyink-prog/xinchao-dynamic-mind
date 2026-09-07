@@ -41,7 +41,7 @@ test('MCP initialize advertises the upgraded tool server', async () => {
   assert.equal(result.status, 200);
   assert.equal(result.body.result.protocolVersion, '2025-06-18');
   assert.equal(result.body.result.serverInfo.name, '心潮念');
-  assert.equal(result.body.result.serverInfo.version, '2.4.0');
+  assert.equal(result.body.result.serverInfo.version, '3.3.1');
   assert.equal(result.body.result.capabilities.tools.listChanged, false);
 });
 
@@ -51,21 +51,33 @@ test('tools/list exposes context, event and short handoff note tools', async () 
     id: 2,
     method: 'tools/list',
   }, handlers());
+  const tools = result.body.result.tools;
+  assert.deepEqual(tools.map((tool) => tool.name), [
+    'xinchao_context',
+    'xinchao_event',
+    'xinchao_awareness',
+    'xinchao_handoff_note',
+    'xinchao_box',
+    'xinchao_personality_reflect',
+    'xinchao_personality_stats',
+    'xinchao_anchor_update',
+    'xinchao_cabin_inbox',
+    'xinchao_cabin_note',
+  ]);
+  const context = tools.find((tool) => tool.name === 'xinchao_context');
+  const event = tools.find((tool) => tool.name === 'xinchao_event');
+  const handoff = tools.find((tool) => tool.name === 'xinchao_handoff_note');
+  assert.equal(context.annotations.readOnlyHint, true);
+  assert.equal(event.annotations.destructiveHint, false);
+  assert.equal(event.annotations.idempotentHint, true);
+  assert.deepEqual(context.inputSchema.required, undefined);
+  assert.equal(context.inputSchema.properties.max_tokens.default, 2200);
+  assert.ok(event.inputSchema.required.includes('event_id'));
+  assert.equal(event.inputSchema.required.includes('session_id'), false);
+  assert.ok(event.inputSchema.properties.interaction_type.enum.includes('sharing'));
+  assert.equal(handoff.annotations.idempotentHint, true);
   assert.deepEqual(
-    result.body.result.tools.map((tool) => tool.name),
-    ['xinchao_context', 'xinchao_event', 'xinchao_handoff_note', 'xinchao_cabin_inbox', 'xinchao_cabin_note'],
-  );
-  assert.equal(result.body.result.tools[0].annotations.readOnlyHint, true);
-  assert.equal(result.body.result.tools[1].annotations.destructiveHint, false);
-  assert.equal(result.body.result.tools[1].annotations.idempotentHint, true);
-  assert.deepEqual(result.body.result.tools[0].inputSchema.required, undefined);
-  assert.equal(result.body.result.tools[0].inputSchema.properties.max_tokens.default, 2200);
-  assert.ok(result.body.result.tools[1].inputSchema.required.includes('event_id'));
-  assert.equal(result.body.result.tools[1].inputSchema.required.includes('session_id'), false);
-  assert.ok(result.body.result.tools[1].inputSchema.properties.interaction_type.enum.includes('sharing'));
-  assert.equal(result.body.result.tools[2].annotations.idempotentHint, true);
-  assert.deepEqual(
-    result.body.result.tools[2].inputSchema.required,
+    handoff.inputSchema.required,
     ['event_id', 'note'],
   );
 });

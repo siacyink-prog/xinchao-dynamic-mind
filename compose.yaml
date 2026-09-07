@@ -1,7 +1,7 @@
 services:
   xinchao:
     build: .
-    image: xinchao/dynamic-mind:2.5.1
+    image: xinchao/dynamic-mind:3.3.1-veyan.1
     container_name: xinchao-dynamic-mind
     restart: unless-stopped
     env_file: .env

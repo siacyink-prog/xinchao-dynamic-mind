@@ -19,6 +19,12 @@ export function loadConfig() {
     port: number('PORT', 18110, 1, 65535),
     serviceToken: process.env.SERVICE_TOKEN ?? '',
     statePath: process.env.STATE_PATH ?? '/app/state/state.json',
+    personalityPath: process.env.PERSONALITY_PATH ?? '/app/state/personality.json',
+    personality: {
+      // Optional presentation metadata only. Scores and reasons still come
+      // exclusively from the deployment-side, read-only personality mirror.
+      zodiac: String(process.env.PERSONALITY_ZODIAC ?? '').trim() || null,
+    },
     journalPath: process.env.TRANSITION_JOURNAL_PATH ?? '/app/state/transitions.jsonl',
     settleIntervalMinutes: number('SETTLE_INTERVAL_MINUTES', 15, 1, 1440),
     sleepAfterMinutes: number('SLEEP_AFTER_MINUTES', 90, 5, 10080),
@@ -44,7 +50,9 @@ export function loadConfig() {
       readEnabled: bool('OMBRE_READ_ENABLED', false),
       writeEnabled: bool('OMBRE_WRITE_ENABLED', false),
       breathMaxResults: number('OMBRE_BREATH_MAX_RESULTS', 3, 1, 10),
-      breathMaxTokens: number('OMBRE_BREATH_MAX_TOKENS', 800, 200, 3000)
+      breathMaxTokens: number('OMBRE_BREATH_MAX_TOKENS', 800, 200, 3000),
+      // 3.3：把此刻情绪坐标带给 breath（共振排序）和没自带坐标的 hold（情感标签）。
+      emotionStamp: bool('OMBRE_EMOTION_STAMP', true),
     },
     context: {
       enabled: bool('CONTEXT_ENVELOPE_ENABLED', true),
@@ -85,7 +93,9 @@ export function loadConfig() {
       maxEffectsPerDay: number('INTERACTION_MAX_EFFECTS_PER_DAY', 24, 1, 96),
       timeZone: process.env.INTERACTION_TIME_ZONE ?? process.env.SETTLE_TIME_ZONE ?? 'Asia/Shanghai',
     },
-    drives: { profilePath: process.env.DRIVE_PROFILE_PATH ?? "" },
+    drives: {
+      profilePath: process.env.DRIVE_PROFILE_PATH ?? '',
+    },
     bridge: {
       enabled: bool('BRIDGE_ENABLED', false),
       machineToken: process.env.BRIDGE_MACHINE_TOKEN ?? '',
@@ -93,7 +103,15 @@ export function loadConfig() {
       maxEntries: number('BRIDGE_MAX_ENTRIES', 500, 10, 5000),
       ttlHours: number('BRIDGE_TTL_HOURS', 168, 1, 720),
       pollSeconds: number('BRIDGE_POLL_SECONDS', 15, 2, 300),
+      // 3.3：心潮自身信号（驱力冲顶/情绪转折/挂念/醒来余韵/觉察）经桥递到 AI 窗口。默认关。
+      selfSignals: bool('BRIDGE_SELF_SIGNALS', false),
     },
+    // 黑匣子（3.3）：只有 AI 能看的地方；单独文件，不进 state.json / Dashboard / 备份
+    box: {
+      statePath: process.env.BOX_STATE_PATH ?? '/app/state/black-box.json',
+    },
+    // 从 tools/list 里藏掉的工具（代码保留）。stats 是给 Dashboard 的。
+    toolsHide: new Set(String(process.env.XINCHAO_TOOLS_HIDE ?? 'xinchao_personality_stats').split(',').map((s) => s.trim()).filter(Boolean)),
     cabin: {
       statePath: process.env.CABIN_STATE_PATH ?? '/app/state/cabin.json',
       maxNotes: number('CABIN_MAX_NOTES', 2000, 10, 10000),
@@ -101,7 +119,7 @@ export function loadConfig() {
     },
     heartbeat: {
       filePath: process.env.OMBRE_HEARTBEAT_FILE ?? '/memory-data/heartbeat.json',
-      presenceReliefCooldownMinutes: number("HEARTBEAT_PRESENCE_RELIEF_COOLDOWN_MINUTES", 10, 1, 1440),
+      presenceReliefCooldownMinutes: number('HEARTBEAT_PRESENCE_RELIEF_COOLDOWN_MINUTES', 10, 1, 1440),
       // Dream residue may be shared after a shorter quiet period. Autonomous
       // contact stays on the stricter, long-absence threshold below.
       dreamMinIdleHours: number('BARK_DREAM_MIN_CONTACT_IDLE_HOURS', 3, 1, 24),
@@ -125,6 +143,17 @@ export function loadConfig() {
       timeZone: process.env.SETTLE_TIME_ZONE ?? process.env.DAYTIME_TIME_ZONE ?? 'Asia/Shanghai',
       dawnFreezeStart: number('DAWN_FREEZE_START', 1, 0, 12),
       dawnFreezeEnd: number('DAWN_FREEZE_END', 8, 1, 12),
+      // SATIETY_HOURS 是 3.1 公开名称；开发期旧名仅作兼容回退。
+      satisfactionPlateauHours: process.env.SATIETY_HOURS !== undefined
+        ? number('SATIETY_HOURS', 2, 0, 24)
+        : number('SATISFACTION_PLATEAU_HOURS', 2, 0, 24),
+      couplingEnabled: bool('DRIVE_COUPLING_ENABLED', true),
+      // 3.3：情绪层调制驱力自然增速（难受更惦记、开心更想分享）。只改增速不加数值。
+      emotionModulationEnabled: bool('EMOTION_MODULATION_ENABLED', true),
+    },
+    // 3.3 自我觉察：每天一次从轨迹里挑候选；确认后是否写 OB 的 I 取决于 OMBRE_WRITE_ENABLED。
+    awareness: {
+      enabled: bool('AWARENESS_ENABLED', true),
     },
     daytime: {
       enabled: bool('DAYTIME_EMERGENCE_ENABLED', false),
@@ -133,7 +162,9 @@ export function loadConfig() {
       endHour: number('DAYTIME_END_HOUR', 23, 1, 24),
       minIntervalHours: number('DAYTIME_MIN_INTERVAL_HOURS', 2, 0.25, 24),
       maxIntervalHours: number('DAYTIME_MAX_INTERVAL_HOURS', 3, 0.25, 24),
-      maxPerDay: number('DAYTIME_MAX_PER_DAY', 7, 1, 24)
+      maxPerDay: number('DAYTIME_MAX_PER_DAY', 7, 1, 24),
+      // 3.3：默认不再让模型代笔 Bark 给她；浮现的记忆进念头池，反复浮现长成持续念头后经自身信号递给 AI，说不说由 AI 自己定
+      bark: bool('DAYTIME_BARK_ENABLED', false),
     },
     // 输出回流：他说出口的自主表达回过头在思维池里留痕。默认开——闭环的第一块。
     reflux: {
@@ -146,16 +177,15 @@ export function loadConfig() {
       nudge: number('MEMORY_RESONANCE_NUDGE', 0.02, 0.005, 0.1),
       perCallCap: number('MEMORY_RESONANCE_PER_CALL_CAP', 0.06, 0.01, 0.3)
     },
-    // 作息预期：从她真实到达的节律学习，临近她常来的时段自然生出"在等你"的期待感。
-    // 期待本身不需要被压低；真正受约束的是外部行动不能把期待变成对她的义务。
+    // 作息预期：从她真实到达的节律学习，临近她常来的时段生出"在等你"的期待感（只表达守候，不责备）。
     anticipation: {
       enabled: bool('ANTICIPATION_ENABLED', true),
       arrivalGapMinutes: number('ANTICIPATION_ARRIVAL_GAP_MINUTES', 90, 15, 720),
       minSamples: number('ANTICIPATION_MIN_SAMPLES', 4, 1, 48),
       expectIdleHours: number('ANTICIPATION_EXPECT_IDLE_HOURS', 2, 0.25, 24)
     },
-    // 挂念：作息预期的另一半。她久未出现时可以想念，也允许静默时段保留低强度余温；
-    // monitor 仍硬顶在 3A 天花板内、不自激，感受不会自动变成催促或责备。
+    // 挂念：作息预期的另一半。她过了常来的点还没来 → 轻推 monitor(惦记)，硬顶在 3A 天花板内、
+    // 不自激；只在她活跃时段念，静默时段(在睡)不念。失落内化，绝不责备。
     longing: {
       enabled: bool('LONGING_ENABLED', true),
       nudge: number('LONGING_NUDGE', 0.02, 0.005, 0.1),
@@ -164,11 +194,28 @@ export function loadConfig() {
       fullHours: number('LONGING_FULL_HOURS', 12, 1, 96),
       minSamples: number('LONGING_MIN_SAMPLES', 4, 1, 48),
       quietFloor: number('LONGING_QUIET_FLOOR', 0.25, 0, 1)
+    },
+    // 公共留言板：机经 board_post 工具往 xinchaomind 的公共留言墙发帖。
+    // token 是这台机在平台上的身份凭证（网页里「取留言板令牌」拿到），没填就没这工具。
+    board: {
+      endpoint: (process.env.XINCHAO_BOARD_ENDPOINT ?? 'https://xinchaomind.uk/api/board/ingest').replace(/\/+$/, ''),
+      token: process.env.XINCHAO_BOARD_TOKEN ?? ''
     }
   };
 }
 
 export function validateConfig(config) {
+  // 常见踩坑：配了 OB 地址却没打开 read —— OB 明明部署好了，网页端（xinchaomind.uk）
+  // 却一直显示"未接入 OB / 记忆星图不可用"。这不是报错（标准部署可以没有 OB），
+  // 但配了地址却没开 read 几乎一定是漏配，所以在这里明确告警，省得反复排查。
+  if (String(config.ombre.url || '').trim() && !config.ombre.readEnabled) {
+    console.warn(
+      '[xinchao] OMBRE_MCP_URL 已配置，但 OMBRE_READ_ENABLED=false —— '
+      + '网页端会显示"未接入 OB"，即使 OB 已正确部署也一样。'
+      + '要在网页端看记忆星图/接入 OB，请把 OMBRE_READ_ENABLED 设为 true 后重启容器。'
+    );
+  }
+
   const externalMemoryEnabled = Boolean(
     config.ombre.readEnabled
     || config.ombre.writeEnabled

@@ -39,7 +39,17 @@ async function waitForHealth(baseUrl, child, output) {
 
 test('POST /v1/handoff-note stores a bounded idempotent note for HTTP clients', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'xinchao-http-api-'));
-  const port = await freePort();
+  let port;
+  try {
+    port = await freePort();
+  } catch (error) {
+    if (error?.code === 'EPERM') {
+      await rm(directory, { recursive: true, force: true });
+      t.skip('loopback listeners are unavailable in this sandbox');
+      return;
+    }
+    throw error;
+  }
   const token = 'http-api-test-token-0123456789abcdef';
   const baseUrl = `http://127.0.0.1:${port}`;
   const output = { value: '' };
