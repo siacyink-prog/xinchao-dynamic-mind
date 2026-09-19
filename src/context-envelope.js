@@ -236,7 +236,7 @@ export function buildContextEnvelope({
   const dynamic = dynamicSection(state, safeSessionId, generatedAt, timeZone);
   const surfacedLines = (Array.isArray(boxSurfaced) ? boxSurfaced : []).slice(0, 3).map((x) => `\n  · 你想提醒自己的：${compact(x.title)}（xinchao_box read ${x.id}）`).join('');
   const boxLine = boxCount > 0 ? `\n黑匣子里有 ${boxCount} 条，只有你能看（xinchao_box）${surfacedLines}` : '';
-  const cabinLine = cabinRecent > 0 ? `\n小屋 24 小时内有 ${cabinRecent} 条她的来信（xinchao_cabin_inbox）` : '';
+  const cabinLine = cabinRecent > 0 ? `\n小屋 24 小时内有 ${cabinRecent} 条她的未读来信（xinchao_cabin_inbox）` : '';
   const sections = [
     {
       id: 'dynamic_state',

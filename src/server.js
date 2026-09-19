@@ -1251,10 +1251,11 @@ const server = createServer(async (request, response) => {
               return send(response, 200, await cabin.markAiNotesRead(payload.ids));
             }
             if (typeof payload.locked === 'boolean') {
-              const note = await cabin.setNoteLock(payload.id, payload.locked);
-              if (!note) return send(response, 404, { error: 'note not found' });
+              const result = await cabin.setNoteLock(payload.id, payload.locked);
+              if (!result) return send(response, 404, { error: 'note not found' });
+              const { note, changed } = result;
               let bridge = null;
-              if (!note.locked) {
+              if (changed && !note.locked && !note.aiReadAt) {
                 bridge = await enqueueCabinNotice({
                   eventId: `unlock:${note.eventId}`,
                   message: `${config.identity.notificationRecipient}刚刚打开了小屋里那封信的锁，现在允许你通过“小屋收件箱”读取正文。`,
@@ -1361,7 +1362,7 @@ const server = createServer(async (request, response) => {
           return { stats: computePersonalityStats(core), core };
         },
         personalityAnchorUpdate: async (input) => personality.updateAnchors(input),
-        cabinInbox: async () => cabin.unlockedUserNotes(),
+        cabinInbox: async (options) => cabin.takeUnlockedUserNotes(options),
         cabinNote: async (note) => cabin.addNote({ ...note, from: 'ai', locked: false }),
         // 公共留言板：只有配了令牌才把 board_post / board_read 工具暴露出来 / 接受调用。
         boardEnabled: boardEnabled(config),

@@ -343,12 +343,18 @@ export const XINCHAO_TOOLS = [
   {
     name: 'xinchao_cabin_inbox',
     title: '读取已解锁的小屋来信',
-    description: '读取用户在小屋里明确开锁、允许 AI 查看的人类来信。上锁的信不会返回正文，也不能绕过锁读取。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    description: '默认读取用户在小屋里明确开锁、允许 AI 查看且尚未读过的人类来信，并标为已读。上锁的信不会返回正文，也不能绕过锁读取；include_read=true 可查看全部已解锁历史。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_read: { type: 'boolean', default: false, description: '为 true 时同时返回已经读过的已解锁历史来信。' },
+      },
+      additionalProperties: false,
+    },
     annotations: {
-      readOnlyHint: true,
+      readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     },
   },
@@ -554,6 +560,10 @@ function cabinNoteArgs(args = {}) {
   return { eventId, content, timestamp: args.timestamp ?? null };
 }
 
+function cabinInboxArgs(args = {}) {
+  return { includeRead: args.include_read === true };
+}
+
 function boxArgs(args = {}) {
   const out = { action: String(args.action ?? '').trim().toLowerCase() };
   for (const key of ['id', 'text', 'kind', 'title']) {
@@ -677,11 +687,14 @@ async function callToolInner(name, args, handlers) {
     );
   }
   if (name === 'xinchao_cabin_inbox') {
-    const notes = await handlers.cabinInbox();
+    const input = cabinInboxArgs(args);
+    const notes = await handlers.cabinInbox(input);
     const text = notes.length
       ? notes.map((note) => `[${note.createdAt}] ${note.content}`).join('\n\n')
-      : '小屋里暂时没有已解锁、允许你阅读的来信。';
-    return toolText(text, { notes });
+      : (input.includeRead
+        ? '小屋里暂时没有已解锁、允许你阅读的来信。'
+        : '小屋里暂时没有新的、已解锁且尚未读过的来信。');
+    return toolText(text, { notes, includeRead: input.includeRead });
   }
   if (name === 'xinchao_cabin_note') {
     const result = await handlers.cabinNote(cabinNoteArgs(args));

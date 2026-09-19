@@ -76,10 +76,41 @@ test('tools/list exposes context, event and short handoff note tools', async () 
   assert.equal(event.inputSchema.required.includes('session_id'), false);
   assert.ok(event.inputSchema.properties.interaction_type.enum.includes('sharing'));
   assert.equal(handoff.annotations.idempotentHint, true);
+  const cabinInbox = tools.find((tool) => tool.name === 'xinchao_cabin_inbox');
+  assert.equal(cabinInbox.annotations.readOnlyHint, false);
+  assert.equal(cabinInbox.annotations.idempotentHint, false);
+  assert.equal(cabinInbox.inputSchema.properties.include_read.default, false);
   assert.deepEqual(
     handoff.inputSchema.required,
     ['event_id', 'note'],
   );
+});
+
+test('xinchao_cabin_inbox defaults to unread delivery and supports explicit history', async () => {
+  const calls = [];
+  const customHandlers = {
+    ...handlers(),
+    cabinInbox: async (options) => {
+      calls.push(options);
+      return options.includeRead
+        ? [{ id: 'note-history', createdAt: '2026-09-01T00:00:00.000Z', content: '历史来信' }]
+        : [];
+    },
+  };
+  const unread = await handleMcpMessage({
+    jsonrpc: '2.0', id: 31, method: 'tools/call',
+    params: { name: 'xinchao_cabin_inbox', arguments: {} },
+  }, customHandlers);
+  assert.match(unread.body.result.content[0].text, /暂时没有新的/);
+  assert.deepEqual(calls[0], { includeRead: false });
+
+  const history = await handleMcpMessage({
+    jsonrpc: '2.0', id: 32, method: 'tools/call',
+    params: { name: 'xinchao_cabin_inbox', arguments: { include_read: true } },
+  }, customHandlers);
+  assert.match(history.body.result.content[0].text, /历史来信/);
+  assert.deepEqual(calls[1], { includeRead: true });
+  assert.equal(history.body.result.structuredContent.includeRead, true);
 });
 
 test('xinchao_context returns injectable text and structured envelope', async () => {

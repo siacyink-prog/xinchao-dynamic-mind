@@ -104,6 +104,5 @@ test('while_away section lists undelivered self signals and cabin line counts re
   assert.ok(away);
   assert.match(away.content, /09-06 02:10｜想她的劲儿/);
   assert.deepEqual(away.data.ids, ['d1']);
-  assert.match(envelope.sections[0].content, /小屋 24 小时内有 2 条她的来信/);
+  assert.match(envelope.sections[0].content, /小屋 24 小时内有 2 条她的未读来信/);
 });
-

@@ -152,7 +152,7 @@ https://xinchao.example.com/mcp
 | `xinchao_context` | 获取当前动态短态和近期连续性；同一窗口首次启动默认只交付一次 |
 | `xinchao_event` | 回传一次明确互动及有界窗口状态；`event_id` 用于幂等 |
 | `xinchao_handoff_note` | 保存限时近期进度摘要，不保存整段聊天原文 |
-| `xinchao_cabin_inbox` | 读取用户明确开锁的小屋来信；上锁正文永不返回 |
+| `xinchao_cabin_inbox` | 默认读取并标记用户明确开锁的未读来信；`include_read=true` 查看已解锁历史，上锁正文永不返回 |
 | `xinchao_cabin_note` | AI 主动给用户的小屋留一封信或便签 |
 | `xinchao_box` | 黑匣子：只有 AI 能看的地方（put / list / read / burn / keep；支持到期、露头、事的日期、到点提醒）。3.3 起接替 pending |
 | `xinchao_awareness` | 自我觉察候选：list / confirm / dismiss / scan；确认与放下只由 AI 定 |
@@ -204,8 +204,9 @@ HttpOnly 会话访问：
 | `POST` / `PATCH` / `DELETE` | `/dashboard/api/cabin/ledger` | 新增、编辑或删除账本记录 |
 
 用户来信默认上锁：连接桥只会通知 AI“有一封信”，不会携带正文。用户主动开锁后，
-AI 才能通过 `xinchao_cabin_inbox` 读取。重新上锁只会阻止之后的读取，无法撤回 AI
-已经读过的内容。
+AI 才能通过 `xinchao_cabin_inbox` 读取。收件箱默认只返回未读来信并原子标记
+`aiReadAt`；显式传 `include_read=true` 才会返回全部已解锁历史。重新上锁只会阻止
+之后的读取，无法撤回 AI 已经读过的内容；已读信再次解锁不会重复通知或重新投递。
 
 花瓣旁的“一句话”只取自当前心潮自己的思绪池，不使用演示文案，也不会由网页猜测。
 考虑到它与梦境正文都可能包含私密内容，默认不会返回；自托管者明确设置

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { StateStore } from './state-store.js';
 
 function initialCabin() {
-  return { schemaVersion: 1, notes: [], ledger: [] };
+  return { schemaVersion: 2, notes: [], ledger: [] };
 }
 
 function text(value, name, max = 100_000) {
@@ -31,9 +31,18 @@ function money(value) {
 }
 
 function normalize(state) {
-  state.schemaVersion = 1;
+  const previousSchemaVersion = Number(state.schemaVersion) || 1;
   state.notes = Array.isArray(state.notes) ? state.notes : [];
   state.ledger = Array.isArray(state.ledger) ? state.ledger : [];
+  for (const note of state.notes) {
+    if (note?.from !== 'user' || Object.hasOwn(note, 'aiReadAt')) continue;
+    // v1 had no AI-side read receipt. Treat already-unlocked legacy notes as
+    // previously delivered so an upgrade never replays the whole old inbox.
+    note.aiReadAt = previousSchemaVersion < 2 && !note.locked
+      ? (note.unlockedAt ?? note.createdAt ?? null)
+      : null;
+  }
+  state.schemaVersion = 2;
   return state;
 }
 
@@ -55,7 +64,7 @@ export class CabinStore {
   }
 
   async init() {
-    await this.store.read();
+    await this.store.update((state) => normalize(state));
   }
 
   async snapshot() {
@@ -63,7 +72,7 @@ export class CabinStore {
     const notes = [...state.notes].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     const ledger = [...state.ledger].sort((a, b) => Date.parse(b.date) - Date.parse(a.date) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt: new Date().toISOString(),
       notes,
       ledger,
@@ -96,6 +105,7 @@ export class CabinStore {
         unlockedAt: locked ? null : createdAt,
         createdAt,
         readAt: from === 'ai' ? null : createdAt,
+        ...(from === 'user' ? { aiReadAt: null } : {}),
       };
       state.notes.push(note);
       state.notes = state.notes.slice(-this.maxNotes);
@@ -111,9 +121,11 @@ export class CabinStore {
       const state = normalize(raw);
       const note = state.notes.find((entry) => entry.id === String(id));
       if (!note || note.from !== 'user') return state;
-      note.locked = Boolean(locked);
+      const nextLocked = Boolean(locked);
+      const changed = note.locked !== nextLocked;
+      note.locked = nextLocked;
       note.unlockedAt = note.locked ? null : (note.unlockedAt ?? now.toISOString());
-      result = structuredClone(note);
+      result = { note: structuredClone(note), changed };
       return state;
     });
     return result;
@@ -134,12 +146,31 @@ export class CabinStore {
     return { changed };
   }
 
-  async unlockedUserNotes() {
+  async unlockedUserNotes({ includeRead = false } = {}) {
     const state = normalize(await this.store.read());
     return state.notes
-      .filter((note) => note.from === 'user' && !note.locked)
+      .filter((note) => note.from === 'user' && !note.locked && (includeRead || !note.aiReadAt))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .map(({ id, content, createdAt, unlockedAt }) => ({ id, content, createdAt, unlockedAt }));
+      .map(({ id, content, createdAt, unlockedAt, aiReadAt }) => ({ id, content, createdAt, unlockedAt, aiReadAt }));
+  }
+
+  async takeUnlockedUserNotes({ includeRead = false } = {}, now = new Date()) {
+    let result = [];
+    await this.store.update((raw) => {
+      const state = normalize(raw);
+      const notes = state.notes
+        .filter((note) => note.from === 'user' && !note.locked && (includeRead || !note.aiReadAt))
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      const readAt = now.toISOString();
+      for (const note of notes) {
+        if (!note.aiReadAt) note.aiReadAt = readAt;
+      }
+      result = notes.map(({ id, content, createdAt, unlockedAt, aiReadAt }) => (
+        { id, content, createdAt, unlockedAt, aiReadAt }
+      ));
+      return state;
+    });
+    return structuredClone(result);
   }
 
   async addLedger(input, now = new Date()) {

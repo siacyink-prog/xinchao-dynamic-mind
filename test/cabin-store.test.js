@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -18,8 +18,18 @@ test('locked user notes stay out of the AI inbox until the user unlocks them', a
   });
   assert.equal((await store.unlockedUserNotes()).length, 0);
 
-  await store.setNoteLock(created.note.id, false);
+  const unlocked = await store.setNoteLock(created.note.id, false);
+  assert.equal(unlocked.changed, true);
   assert.equal((await store.unlockedUserNotes())[0].content, '这是一封只在开锁后才能被看到的信。');
+  const delivered = await store.takeUnlockedUserNotes({}, new Date('2026-09-19T10:00:00.000Z'));
+  assert.equal(delivered[0].aiReadAt, '2026-09-19T10:00:00.000Z');
+  assert.equal((await store.unlockedUserNotes()).length, 0);
+  assert.equal((await store.unlockedUserNotes({ includeRead: true })).length, 1);
+
+  await store.setNoteLock(created.note.id, true);
+  const reopened = await store.setNoteLock(created.note.id, false);
+  assert.equal(reopened.note.aiReadAt, '2026-09-19T10:00:00.000Z');
+  assert.equal((await store.takeUnlockedUserNotes()).length, 0);
 
   const duplicate = await store.addNote({
     eventId: 'note-event-0001',
@@ -28,6 +38,54 @@ test('locked user notes stay out of the AI inbox until the user unlocks them', a
   });
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.note.content, '这是一封只在开锁后才能被看到的信。');
+});
+
+test('concurrent AI inbox reads deliver each unread user note only once', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'xinchao-cabin-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new CabinStore(join(directory, 'cabin.json'));
+
+  await store.addNote({
+    eventId: 'note-event-concurrent-1',
+    from: 'user',
+    content: '并发读取时只交付一次。',
+    locked: false,
+  });
+  const reads = await Promise.all([
+    store.takeUnlockedUserNotes({}, new Date('2026-09-19T11:00:00.000Z')),
+    store.takeUnlockedUserNotes({}, new Date('2026-09-19T11:00:01.000Z')),
+  ]);
+  assert.deepEqual(reads.map((notes) => notes.length).sort(), [0, 1]);
+});
+
+test('schema v1 migration does not replay already-unlocked history', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'xinchao-cabin-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'cabin.json');
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 1,
+    notes: [
+      {
+        id: 'legacy-open', eventId: 'legacy-open-event', from: 'user', content: '旧的已解锁来信',
+        locked: false, unlockedAt: '2026-09-01T00:00:00.000Z', createdAt: '2026-09-01T00:00:00.000Z', readAt: '2026-09-01T00:00:00.000Z',
+      },
+      {
+        id: 'legacy-locked', eventId: 'legacy-locked-event', from: 'user', content: '旧的上锁来信',
+        locked: true, unlockedAt: null, createdAt: '2026-09-02T00:00:00.000Z', readAt: '2026-09-02T00:00:00.000Z',
+      },
+    ],
+    ledger: [],
+  }, null, 2)}\n`, 'utf8');
+
+  const store = new CabinStore(path);
+  await store.init();
+  assert.equal((await store.takeUnlockedUserNotes()).length, 0);
+  assert.equal((await store.unlockedUserNotes({ includeRead: true }))[0].aiReadAt, '2026-09-01T00:00:00.000Z');
+
+  await store.setNoteLock('legacy-locked', false, new Date('2026-09-19T12:00:00.000Z'));
+  assert.equal((await store.takeUnlockedUserNotes()).length, 1);
+  const migrated = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(migrated.schemaVersion, 2);
 });
 
 test('AI unread notes and love ledger totals are persisted and editable', async (t) => {
